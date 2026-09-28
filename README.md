@@ -1,36 +1,64 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Naukri personal automation — Phase 1
 
-## Getting Started
+Only the public-page browser test is implemented. Naukri automation is deferred.
 
-First, run the development server:
+## Browser setup
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+Use Node.js 24.x locally and on Vercel. Dependencies are pinned:
+`playwright-core@1.63.0` targets Chromium 153 and
+`@sparticuz/chromium-min@153.0.0` provides serverless launch support.
+
+Locally, Playwright launches its native headless Chromium. On Vercel, the helper
+downloads the pinned Linux release pack for the runtime architecture and extracts
+it into temporary storage. Cold starts depend on GitHub release availability.
+The desktop browser is not deployed. Both packages are externalized in Next.js.
+
+Reference: https://github.com/Sparticuz/chromium
+
+## Local test
+
+Run these individually, checking each result:
+
+1. `npm ci`
+2. `npm run browser:install`
+3. `npm run dev`
+4. In another terminal: `curl --fail-with-body http://localhost:3000/api/test-browser`
+
+Expected JSON:
+
+```json
+{
+  "success": true,
+  "browser": "launched",
+  "pageTitle": "Example Domain",
+  "timestamp": "<current ISO timestamp>"
+}
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The endpoint uses Node.js with a 120-second function limit, a 20-second launch
+ timeout, and a 25-second navigation timeout. It makes one browser attempt,
+checks the HTTP response and title, and closes the browser in `finally`.
+Errors return HTTP 500 with a stage; raw browser errors and secrets are omitted.
+Responses are not cached. The target is fixed to https://example.com.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Vercel test — after local confirmation
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Deploy as a Next.js project with Node.js 24.x. Set `ENABLE_BROWSER_TEST=true`
+for the deployment environment before deployment. Open `/api/test-browser`
+on the deployed URL and verify the JSON above. Local success alone does not
+validate the Linux binary or Vercel networking.
 
-## Learn More
+The test endpoint is public while enabled. Retain Vercel deployment protection
+where available. Set `ENABLE_BROWSER_TEST=false` and redeploy after testing
+to disable the endpoint (HTTP 404). No secrets are needed for this phase.
 
-To learn more about Next.js, take a look at the following resources:
+Stop until both local and deployed tests are confirmed before Phase 2.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Validation
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+`npm run lint` and `npm run build` passed. The starter UI downloads Google Fonts
+at build time. The local endpoint returned `success: true` and
+`pageTitle: "Example Domain"`. These checks ran on the workstation's Node.js 26;
+the configured Vercel Node.js 24 runtime still needs deployment validation.
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Vercel validation is pending.

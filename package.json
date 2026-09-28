@@ -2,14 +2,24 @@
   "name": "naukri",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": "24.x"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "browser:install": "playwright-core install chromium --only-shell",
+    "test:naukri-local-chrome": "node scripts/test-naukri-local-chrome.ts",
+    "naukri:login": "node scripts/naukri-login.ts",
+    "naukri:validate": "node scripts/validate-naukri-session.ts",
+    "naukri:refresh-name": "node scripts/refresh-naukri-name.ts"
   },
   "dependencies": {
+    "@sparticuz/chromium-min": "153.0.0",
     "next": "16.3.6",
+    "playwright-core": "1.63.0",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },
