@@ -1,4 +1,4 @@
-import { assertOutsideRepository, LocalChromeError, resolveChromeExecutable } from "./lib/local-chrome.ts";
+import { assertOutsideRepository, LocalChromeError, localChromeLaunchOptions, resolveChromeExecutable } from "./lib/local-chrome.ts";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -44,8 +44,9 @@ async function main() {
   process.once("SIGINT", onInterrupt);
   process.once("SIGTERM", onInterrupt);
   try {
-    // Standard Playwright defaults: no serverless args, stealth, or UA overrides.
+    // Share the local desktop launch policy with login and validation.
     context = await chromium.launchPersistentContext(profile, {
+      ...localChromeLaunchOptions(),
       executablePath, headless: false, timeout: 20_000,
     });
     if (interrupted) return;

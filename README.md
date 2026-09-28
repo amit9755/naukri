@@ -10,6 +10,14 @@ installed Chrome window (`headless: false`) with a persistent dedicated profile.
 They do not use the downloaded headless Chromium or require `browser:install`.
 Linux and Vercel are unsupported for these local session commands.
 
+On Windows, local session and diagnostic launches explicitly enable Chrome's
+sandbox (`chromiumSandbox: true`), preventing Playwright's default `--no-sandbox`.
+They also omit `--disable-dev-shm-usage` and `--enable-unsafe-swiftshader`, which
+are unnecessary for this desktop setup. Other Playwright defaults and macOS
+launch behavior remain unchanged. This removes the sandbox warning; successful
+Naukri login still requires manual verification on Windows.
+
+
 Chrome is checked in order at:
 
 - macOS: `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`, then

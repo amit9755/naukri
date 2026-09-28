@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { chromium } from "playwright-core";
 import type { BrowserContext, Page } from "playwright-core";
 
-import { assertOutsideRepository, LocalChromeError, localChromePaths, resolveChromeExecutable } from "./local-chrome.ts";
+import { assertOutsideRepository, LocalChromeError, localChromeLaunchOptions, localChromePaths, resolveChromeExecutable } from "./local-chrome.ts";
 
 export const dashboardUrl = "https://www.naukri.com/mnjuser/homepage";
 
@@ -40,6 +40,7 @@ export async function withLocalSession(
     await privateDirectory(profileDirectory);
     await assertOutsideRepository(profileDirectory);
     context = await chromium.launchPersistentContext(profileDirectory, {
+      ...localChromeLaunchOptions(),
       executablePath, headless: false, timeout: 20_000,
       slowMo: options.slowMo ?? 0,
     });

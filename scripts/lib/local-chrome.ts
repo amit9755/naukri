@@ -75,3 +75,12 @@ export async function assertOutsideRepository(directory: string) {
     }
   }
 }
+
+// Local Windows Chrome uses its sandbox and normal desktop rendering defaults.
+// Keep all other Playwright defaults, including its automation connection.
+export function localChromeLaunchOptions(platform: string = process.platform) {
+  return platform === "win32" ? {
+    chromiumSandbox: true,
+    ignoreDefaultArgs: ["--disable-dev-shm-usage", "--enable-unsafe-swiftshader"],
+  } : {};
+}
