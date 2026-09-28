@@ -44,3 +44,21 @@ storageState*.json
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Local authentication, browser profiles, and secrets
+.auth/
+ChromeProfile/
+NaukriAutomation/
+*chrome-diagnostic*/
+browser-profile*/
+user-data-dir/
+storage-state*.json
+storageState*
+cookies*
+session*.json
+credentials*
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*

@@ -1,3 +1,4 @@
+import { LocalChromeError } from "./lib/local-chrome.ts";
 import { withLocalSession } from "./lib/local-session.ts";
 import { checkAccess, openNameForm, profileUrl } from "./lib/name-form.ts";
 
@@ -76,11 +77,11 @@ withLocalSession(async (context) => {
       } catch { /* Closing the context discards an unsaved draft. */ }
     }
   }
-}, { slowMo: 700 }).catch(() => {
+}, { slowMo: 700 }).catch((error: unknown) => {
   console.error(JSON.stringify({
     success: false, stage, saveAttempted,
     originalNamePreserved: null,
-    message: "Stopped without retry. Verify your name manually if a save was attempted; no automatic correction was submitted.",
+    message: error instanceof LocalChromeError ? error.message : "Stopped without retry. Verify your name manually if a save was attempted; no automatic correction was submitted.",
   }));
   process.exitCode = 1;
 });

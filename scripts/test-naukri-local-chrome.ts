@@ -1,6 +1,6 @@
-import { constants } from "node:fs";
-import { access, mkdtemp, rm } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { assertOutsideRepository, LocalChromeError, resolveChromeExecutable } from "./lib/local-chrome.ts";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
 import type { BrowserContext, Page } from "playwright-core";
@@ -31,23 +31,8 @@ async function inspect(page: Page, status: number | null) {
 }
 
 async function main() {
-  if (process.platform !== "darwin" || process.env.VERCEL) {
-    throw new Error("This diagnostic is for a local Mac only.");
-  }
-  const candidates = [
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    join(homedir(), "Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
-  ];
-  let executablePath: string | undefined;
-  for (const candidate of candidates) {
-    try {
-      await access(candidate, constants.X_OK);
-      executablePath = candidate;
-      break;
-    } catch { /* Check the next standard Chrome installation location. */ }
-  }
-  if (!executablePath) throw new Error("Google Chrome executable not found in /Applications or ~/Applications.");
-
+  const executablePath = await resolveChromeExecutable();
+  await assertOutsideRepository(tmpdir());
   const profile = await mkdtemp(join(tmpdir(), "naukri-chrome-diagnostic-"));
   let context: BrowserContext | undefined;
   let interrupted = false;
@@ -97,6 +82,6 @@ async function main() {
 }
 
 main().catch((error: unknown) => {
-  console.error(JSON.stringify({ success: false, message: error instanceof Error ? error.message : "Local diagnostic failed" }));
+  console.error(JSON.stringify({ success: false, message: error instanceof LocalChromeError ? error.message : "Local diagnostic stopped. Check Chrome and close any diagnostic browser window. No retry was attempted." }));
   process.exitCode = 1;
 });

@@ -1,33 +1,31 @@
-import { constants } from "node:fs";
-import { access, chmod, lstat, mkdir } from "node:fs/promises";
-import { homedir } from "node:os";
+import { chmod, lstat, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
 import type { BrowserContext, Page } from "playwright-core";
 
+import { assertOutsideRepository, LocalChromeError, localChromePaths, resolveChromeExecutable } from "./local-chrome.ts";
+
 export const dashboardUrl = "https://www.naukri.com/mnjuser/homepage";
-export const profileDirectory = join(homedir(), "Library", "Application Support", "NaukriAutomation", "ChromeProfile");
 
 async function privateDirectory(directory: string) {
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const info = await lstat(directory);
-  if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== process.getuid?.()) {
+  if (!info.isDirectory() || info.isSymbolicLink() || (process.platform === "darwin" && info.uid !== process.getuid?.())) {
     throw new Error("Profile directory must be an ordinary directory owned by the current user.");
   }
-  await chmod(directory, 0o700);
+  // Windows uses the per-user LocalAppData directory’s inherited ACLs.
+  if (process.platform === "darwin") await chmod(directory, 0o700);
 }
 
 export async function withLocalSession(
   action: (context: BrowserContext, signal: AbortSignal) => Promise<void>,
   options: { slowMo?: number } = {},
 ) {
-  if (process.platform !== "darwin" || process.env.VERCEL) {
-    throw new Error("Session commands run only on your local Mac.");
-  }
-  const executablePath = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-  await access(executablePath, constants.X_OK);
-  // Chrome inherits this mask; new session files are private to this macOS user.
-  const previousMask = process.umask(0o077);
+  const { profileDirectory } = localChromePaths();
+  const executablePath = await resolveChromeExecutable();
+  await assertOutsideRepository(profileDirectory);
+  // Preserve macOS privacy; POSIX masks do not establish Windows ACLs.
+  const previousMask = process.platform === "darwin" ? process.umask(0o077) : undefined;
   const controller = new AbortController();
   let context: BrowserContext | undefined;
   const stop = () => {
@@ -40,6 +38,7 @@ export async function withLocalSession(
   try {
     await privateDirectory(join(profileDirectory, ".."));
     await privateDirectory(profileDirectory);
+    await assertOutsideRepository(profileDirectory);
     context = await chromium.launchPersistentContext(profileDirectory, {
       executablePath, headless: false, timeout: 20_000,
       slowMo: options.slowMo ?? 0,
@@ -52,7 +51,7 @@ export async function withLocalSession(
     } finally {
       process.removeListener("SIGINT", stop);
       process.removeListener("SIGTERM", stop);
-      process.umask(previousMask);
+      if (previousMask !== undefined) process.umask(previousMask);
     }
   }
 }
@@ -112,7 +111,8 @@ export async function inspectSession(page: Page, status: number | null) {
   };
 }
 
-export function reportSessionError() {
+export function reportSessionError(error?: unknown) {
+  if (error instanceof LocalChromeError) console.error(error.message);
   // Raw browser errors may include profile paths or navigation/session tokens.
   console.error("Session command stopped. Check Chrome is installed, the dedicated profile is not already open, and the browser was not closed early. No login retry was attempted.");
   process.exitCode = 1;
