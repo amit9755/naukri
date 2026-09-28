@@ -53,15 +53,52 @@ npm run naukri:validate
 ```
 
 The diagnostic visits the public homepage read-only using a temporary profile
-that is removed afterward. For first-time login, enter credentials and any OTP
-only in the dedicated Chrome window; do not save the password. Return to the
-terminal and type `done` after reaching your dashboard. Complete any OTP, CAPTCHA,
-or MFA yourself in Chrome. An already authenticated session skips the login prompt.
-After `done`, the command makes one read-only dashboard visit to verify authentication.
-It prints `authenticated` and `profileAccessible` booleans; inconclusive detection,
-cancellation, or failure reports false and exits unsuccessfully without retrying.
-The dedicated profile remains on disk for subsequent commands. Validation is read-only.
+that is removed afterward. Login first checks the existing session and skips
+credential entry when authenticated. Otherwise it opens the official HTTPS
+Naukri login page. Without environment credentials, complete login manually in
+Chrome and type `done` after reaching the dashboard. Do not save your password.
+
+Optional credential filling uses `NAUKRI_USERNAME` and `NAUKRI_PASSWORD` from
+your local environment or the gitignored `.env` in the project directory. The
+login command uses Node.js 24's `--env-file-if-exists`; existing environment
+variables take precedence. Both values must be provided together. `.env.example`
+contains empty entries only. Never commit the populated `.env`, paste credentials
+into shell commands, or add them to logs, tickets, screenshots, or documentation.
+Do not set these credentials on Vercel or other hosted environments.
+
+In Windows PowerShell, create the local file only if it does not already exist:
+
+```powershell
+cd C:\work\naukri
+if (!(Test-Path .env)) { Copy-Item .env.example .env }
+notepad .env
+git check-ignore .env
+npm run naukri:login
+```
+
+Enter the two values privately in the editor and save. Use dotenv quoting if a
+value contains spaces or `#`; keep the value exact. The command fills only uniquely
+matched visible login controls and clicks Login once. Selectors are checked at
+runtime; an unfamiliar layout stops without submission. It never retries a login.
+Playwright debug logging (`DEBUG` or `PWDEBUG`) must be unset because debug output
+can expose input values. No tracing, screenshots, or credential exports are enabled.
+
+If a challenge is detected, automated interaction stops and Chrome stays open for
+you to complete it manually. Type `done` only after the signed-in dashboard is
+visible. The final JSON contains `authenticated`, `profileAccessible`, and
+`manualVerificationRequired` (whether a challenge required manual handling during
+this run). Failed or uncertain authentication exits unsuccessfully. Verification
+uses read-only dashboard navigation; no profile edits are submitted.
+
+Once login finishes and Chrome closes, reuse the same saved profile with:
+
+```powershell
+npm run naukri:validate
+```
+
 If validation is blocked, unknown, or unsuccessful, stop and inspect manually.
+You may remove the credential entries from `.env` after successful login; the
+persistent profile is reused independently of them. Keep that profile outside Git.
 
 Optional read-only inspection of the name form:
 
