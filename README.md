@@ -47,7 +47,12 @@ npm run naukri:validate
 The diagnostic visits the public homepage read-only using a temporary profile
 that is removed afterward. For first-time login, enter credentials and any OTP
 only in the dedicated Chrome window; do not save the password. Return to the
-terminal and type `done` after reaching your dashboard. Validation is read-only.
+terminal and type `done` after reaching your dashboard. Complete any OTP, CAPTCHA,
+or MFA yourself in Chrome. An already authenticated session skips the login prompt.
+After `done`, the command makes one read-only dashboard visit to verify authentication.
+It prints `authenticated` and `profileAccessible` booleans; inconclusive detection,
+cancellation, or failure reports false and exits unsuccessfully without retrying.
+The dedicated profile remains on disk for subsequent commands. Validation is read-only.
 If validation is blocked, unknown, or unsuccessful, stop and inspect manually.
 
 Optional read-only inspection of the name form:
