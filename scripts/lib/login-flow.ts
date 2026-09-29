@@ -1,11 +1,17 @@
 import type { Page } from "playwright-core";
 import { inspectSession, navigateToDashboard } from "./local-session.ts";
 
+import { checkExistingSession } from "./existing-session.ts";
+import type { ExistingSessionStage, DashboardNavigation } from "./existing-session.ts";
+import type { SessionErrorCategory } from "./session-diagnostics.ts";
+
 export type LoginCredentials = { username: string; password: string };
-export type LoginStage = "launch" | "navigation" | "existing-session-check" | "login-page-detection" |
+export type LoginStage = "launch" | "navigation" | ExistingSessionStage | "login-page-detection" |
   "username-field-detection" | "password-field-detection" | "credential-fill" |
   "submit-button-detection" | "submit" | "post-submit-navigation" | "authentication-check" | "manual-verification";
 export type LoginStatus = {
+  existingSessionAuthenticated?: boolean;
+  errorCategory?: SessionErrorCategory;
   authenticated: boolean;
   profileAccessible: boolean;
   manualVerificationRequired: boolean;
@@ -39,8 +45,9 @@ export async function runLoginFlow(
   credentials: LoginCredentials | undefined,
   manualCompletion: (verificationRequired: boolean, diagnostic: LoginStatus) => Promise<boolean>,
   inspect = inspectSession,
-  dashboard: (page: Page) => Promise<{ status: number | null; navigationError: string | null }> = navigateToDashboard,
+  dashboard: DashboardNavigation = navigateToDashboard,
   onDiagnostic: (status: LoginStatus) => void = () => {},
+  diagnosticMode = false,
 ): Promise<LoginStatus> {
   const diagnostic: LoginStatus = {
     authenticated: false, profileAccessible: false, manualVerificationRequired: false,
@@ -91,27 +98,24 @@ export async function runLoginFlow(
   };
 
   try {
-    mark("navigation", "opening authenticated page");
-    const initialNavigation = await dashboard(page);
-    if (initialNavigation.navigationError) return result("authenticated page navigation failed");
-    if (signal.aborted) return result("operation cancelled");
-    mark("existing-session-check", "checking existing session");
-    let state = await observe(initialNavigation.status);
-    if (signal.aborted) return result("operation cancelled");
-    if (!officialPage(page)) return result("unexpected page origin");
-    if (state.accessDenied) return result("access denied");
-    if (state.authenticated && initialNavigation.status !== null && initialNavigation.status >= 200 && initialNavigation.status < 300) return result("existing session authenticated", true);
-    if (challenge(state)) {
+    const existing = await checkExistingSession(page, signal, (check) => mark(check.stage, check.reason), inspect, dashboard);
+    diagnostic.stage = existing.stage;
+    if (existing.existingSessionAuthenticated !== undefined) diagnostic.existingSessionAuthenticated = existing.existingSessionAuthenticated;
+    if (diagnosticMode && existing.errorCategory) diagnostic.errorCategory = existing.errorCategory;
+    mark(existing.stage, existing.reason);
+    if (existing.existingSessionAuthenticated === true) return result("existing session authenticated", true);
+    if (existing.state && challenge(existing.state)) {
       diagnostic.manualVerificationRequired = true;
       return await finishManually("verification challenge requires manual completion");
     }
+    if (existing.existingSessionAuthenticated !== false) return result(existing.reason);
 
     mark("navigation", "opening official login page");
     const response = await page.goto(loginUrl, { waitUntil: "domcontentloaded", timeout: 25_000 });
     if (signal.aborted) return result("operation cancelled");
     mark("login-page-detection", "checking official login page");
     if (!officialPage(page)) return result("unexpected page origin");
-    state = await observe(response?.status() ?? null);
+    let state = await observe(response?.status() ?? null);
     if (state.accessDenied) return result("access denied");
     if (challenge(state)) {
       diagnostic.manualVerificationRequired = true;

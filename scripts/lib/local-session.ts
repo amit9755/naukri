@@ -5,6 +5,9 @@ import type { BrowserContext, Page } from "playwright-core";
 
 import { assertOutsideRepository, LocalChromeError, localChromeLaunchOptions, localChromePaths, resolveChromeExecutable } from "./local-chrome.ts";
 
+import { sessionErrorCategory } from "./session-diagnostics.ts";
+import type { SessionErrorCategory } from "./session-diagnostics.ts";
+
 export const dashboardUrl = "https://www.naukri.com/mnjuser/homepage";
 
 async function privateDirectory(directory: string) {
@@ -57,7 +60,7 @@ export async function withLocalSession(
   }
 }
 
-export async function navigateToDashboard(page: Page) {
+export async function navigateToDashboard(page: Page, onError?: (category: SessionErrorCategory) => void): Promise<{ status: number | null; navigationError: string | null }> {
   let status: number | null = null;
   let navigationError: string | null = null;
   const responseListener = (response: import("playwright-core").Response) => {
@@ -67,6 +70,7 @@ export async function navigateToDashboard(page: Page) {
   try {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded", timeout: 25_000 });
   } catch (error) {
+    onError?.(sessionErrorCategory(error, page));
     navigationError = error instanceof Error && error.name === "TimeoutError" ? "TIMEOUT" : "NAVIGATION_FAILED";
   } finally {
     page.off("response", responseListener);

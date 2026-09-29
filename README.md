@@ -106,6 +106,32 @@ Failed or uncertain authentication exits unsuccessfully. Verification uses
 read-only dashboard navigation; no profile edits are submitted. If browser cleanup
 fails, the final result reports failure even if authentication was detected earlier.
 
+For local existing-session diagnostics, run in Windows PowerShell:
+
+```powershell
+cd C:\work\naukri
+$env:NAUKRI_DIAGNOSTIC = "true"
+npm run naukri:login
+Remove-Item Env:NAUKRI_DIAGNOSTIC
+```
+
+This opt-in mode prints the existing-session progression:
+`existing-session-navigation` → `existing-session-response-check` →
+`existing-session-page-check` → `existing-session-auth-detection` (when needed).
+An official login redirect skips authentication evaluation of the departing page
+and reports `existingSessionAuthenticated: false`; the regular login flow then
+continues. A normal logged-out page also reports false. Unknown pages, unsuccessful
+responses, and unexpected browser errors stop without retries. A redirect that
+interrupts evaluation is accepted only if the current destination is the official
+HTTPS login page; other interrupted evaluations stop.
+
+Failures include an allowlisted `errorCategory` only in diagnostic mode, such as
+`navigation-timeout`, `page-closed`, `browser-closed`, `dns-failure`,
+`connection-failure`, `navigation-interrupted`, `unexpected-status`, or `unknown`.
+There are no raw errors, stacks, URLs, credentials, or session contents in this
+output. Keep `DEBUG` and `PWDEBUG` unset even in this mode. A generic historical
+failure does not by itself identify which underlying browser error occurred.
+
 Once login finishes and Chrome closes, reuse the same saved profile with:
 
 ```powershell

@@ -4,8 +4,8 @@ import type { Page } from "playwright-core";
 import { credentialsFromEnvironment, runLoginFlow } from "./login-flow.ts";
 
 const credentials = { username: "fixture-user", password: "fixture-password" };
-function fixture(options: { already?: boolean; ambiguous?: boolean; challengeAfterFill?: boolean; challengeAfterClick?: boolean; clickFails?: boolean; denied?: boolean; initialChallenge?: boolean; failedLogin?: boolean; missing?: string; fillFails?: boolean; manualCancel?: boolean; navigationFails?: boolean; detectionFails?: boolean; wrongLoginPage?: boolean; verificationNavigationFails?: boolean } = {}) {
-  let url = "https://www.naukri.com/mnjuser/homepage";
+function fixture(options: { already?: boolean; ambiguous?: boolean; challengeAfterFill?: boolean; challengeAfterClick?: boolean; clickFails?: boolean; denied?: boolean; initialChallenge?: boolean; failedLogin?: boolean; missing?: string; fillFails?: boolean; manualCancel?: boolean; navigationFails?: boolean; detectionFails?: boolean; wrongLoginPage?: boolean; verificationNavigationFails?: boolean; profileRedirect?: boolean } = {}) {
+  let url = options.profileRedirect ? "https://www.naukri.com/nlogin/login" : "https://www.naukri.com/mnjuser/homepage";
   let authenticated = !!options.already;
   let challenged = !!options.initialChallenge;
   const actions: string[] = [];
@@ -38,6 +38,8 @@ function fixture(options: { already?: boolean; ambiguous?: boolean; challengeAft
   };
   const page = {
     url: () => url,
+    isClosed: () => false,
+    context: () => ({ browser: () => ({ isConnected: () => true }) }),
     goto: async (target: string) => { url = options.wrongLoginPage ? "https://www.naukri.com/unexpected" : target; return { status: () => 200, ok: () => true }; },
     getByLabel: (label: RegExp) => locator(label.test("Password") ? "password" : "username"),
     getByPlaceholder: () => locator("placeholder"),
@@ -186,11 +188,11 @@ test("fill errors preserve stage and never expose raw errors", async () => {
 
 test("navigation and session-inspection failures have distinct diagnostic stages", async () => {
   const navigation = await fixture({ navigationFails: true }).run();
-  assert.equal(navigation.stage, "navigation");
-  assert.equal(navigation.reason, "authenticated page navigation failed");
+  assert.equal(navigation.stage, "existing-session-navigation");
+  assert.equal(navigation.reason, "existing-session navigation failed");
   const inspection = await fixture({ detectionFails: true }).run();
-  assert.equal(inspection.stage, "existing-session-check");
-  assert.equal(inspection.reason, "operation failed at this stage");
+  assert.equal(inspection.stage, "existing-session-auth-detection");
+  assert.equal(inspection.reason, "existing-session operation failed");
   assert.doesNotMatch(JSON.stringify(inspection), /secret-token/);
 });
 
@@ -242,5 +244,44 @@ test("failed authentication navigation pauses at its original stage", async () =
   assert.match(status.reason, /authenticated page navigation failed after submission/);
   assert.equal(f.manualDiagnostics.length, 1);
   assert.equal(f.manualDiagnostics[0].stage, "authentication-check");
+  assert.equal(f.clicks(), 1);
+});
+
+
+test("login controls are inspected only after confirmed unauthenticated state", async () => {
+  const f = fixture();
+  const progression: import("./login-flow.ts").LoginStatus[] = [];
+  const status = await runLoginFlow(f.page, new AbortController().signal, credentials, f.manual, f.inspect, f.dashboard,
+    (entry) => progression.push(entry), true);
+  const established = progression.findIndex((entry) => entry.existingSessionAuthenticated === false);
+  const fieldDetection = progression.findIndex((entry) => entry.stage === "username-field-detection");
+  assert.ok(established >= 0 && fieldDetection > established);
+  assert.equal(status.authenticated, true);
+  assert.equal(f.clicks(), 1);
+});
+
+test("existing-session errors expose category only with diagnostic mode enabled", async () => {
+  for (const diagnosticMode of [false, true]) {
+    const f = fixture({ navigationFails: true });
+    const status = await runLoginFlow(f.page, new AbortController().signal, credentials, f.manual, f.inspect, f.dashboard, undefined, diagnosticMode);
+    assert.equal(status.errorCategory, diagnosticMode ? "navigation-timeout" : undefined);
+    assert.equal(status.usernameFieldFound, false);
+    assert.equal(status.passwordFieldFound, false);
+    assert.equal(status.submitButtonFound, false);
+    assert.equal(f.clicks(), 0);
+  }
+});
+
+
+test("profile redirect establishes unauthenticated state before continuing to login fields", async () => {
+  const f = fixture({ profileRedirect: true });
+  const progression: import("./login-flow.ts").LoginStatus[] = [];
+  const status = await runLoginFlow(f.page, new AbortController().signal, credentials, f.manual, f.inspect, f.dashboard,
+    (entry) => progression.push(entry), true);
+  const redirect = progression.findIndex((entry) => entry.reason === "profile redirected to login");
+  const detection = progression.findIndex((entry) => entry.stage === "username-field-detection");
+  assert.ok(redirect >= 0 && detection > redirect);
+  assert.equal(progression[redirect].existingSessionAuthenticated, false);
+  assert.equal(status.authenticated, true);
   assert.equal(f.clicks(), 1);
 });

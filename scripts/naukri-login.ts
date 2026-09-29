@@ -8,6 +8,7 @@ let status: LoginStatus = {
   stage: "launch", reason: "login setup failed",
 };
 let flowFinished = false;
+const diagnosticMode = process.env.NAUKRI_DIAGNOSTIC === "true";
 
 async function main() {
   console.log(JSON.stringify({ credentialsConfigured: status.credentialsConfigured }));
@@ -41,7 +42,10 @@ async function main() {
       } finally {
         terminal.close();
       }
-    }, undefined, undefined, (diagnostic) => { status = diagnostic; });
+    }, undefined, undefined, (diagnostic) => {
+      status = diagnostic;
+      if (diagnosticMode && diagnostic.stage.startsWith("existing-session-")) console.log(JSON.stringify(diagnostic));
+    }, diagnosticMode);
     flowFinished = true;
   });
   console.log(JSON.stringify(status));
