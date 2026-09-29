@@ -375,3 +375,41 @@ test("normal login alternatives pass the real challenge classifier and submit cr
   assert.deepEqual(f.actions, ["username", "password"]);
   assert.equal(f.clicks(), 1);
 });
+
+test("manual done requires current authenticated evidence before dashboard verification", async () => {
+  const f = fixture();
+  const events: string[] = [];
+  let manualDone = false;
+  const status = await runLoginFlow(f.page, new AbortController().signal, undefined,
+    async () => { events.push("done"); manualDone = true; return f.manual(); },
+    async () => { if (manualDone) events.push("inspect-current"); return f.inspect(); },
+    async () => { if (manualDone) events.push("verify-dashboard"); return f.dashboard(); });
+  assert.equal(status.authenticated, true);
+  assert.equal(status.profileAccessible, true);
+  assert.deepEqual(events.slice(0, 3), ["done", "inspect-current", "verify-dashboard"]);
+});
+
+test("typing done while still unauthenticated never reports success", async () => {
+  const f = fixture();
+  let done = false;
+  let postDoneNavigations = 0;
+  const status = await runLoginFlow(f.page, new AbortController().signal, undefined,
+    async () => { done = true; return true; }, f.inspect,
+    async () => { if (done) postDoneNavigations++; return f.dashboard(); });
+  assert.equal(status.authenticated, false);
+  assert.equal(status.profileAccessible, false);
+  assert.equal(status.reason, "manual completion is not authenticated; session not confirmed");
+  assert.equal(postDoneNavigations, 0);
+  assert.equal(f.clicks(), 0);
+});
+
+
+test("manual login completed during diagnostic inspection is verified without resubmitting", async () => {
+  const f = fixture({ missing: "username" });
+  const status = await runLoginFlow(f.page, new AbortController().signal, credentials, f.manual, f.inspect, f.dashboard,
+    undefined, true, async () => { await f.manual(); });
+  assert.equal(status.authenticated, true);
+  assert.equal(status.profileAccessible, true);
+  assert.equal(f.clicks(), 0);
+  assert.deepEqual(f.actions, ["manual"]);
+});

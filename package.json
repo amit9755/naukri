@@ -13,6 +13,7 @@
     "browser:install": "playwright-core install chromium --only-shell",
     "test:naukri-local-chrome": "node scripts/test-naukri-local-chrome.ts",
     "naukri:login": "node --env-file-if-exists=.env scripts/naukri-login.ts",
+    "naukri:profile-info": "node scripts/naukri-profile-info.ts",
     "naukri:validate": "node scripts/validate-naukri-session.ts",
     "naukri:refresh-name": "node scripts/refresh-naukri-name.ts"
   },

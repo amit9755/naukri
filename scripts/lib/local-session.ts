@@ -11,6 +11,9 @@ import type { SessionErrorCategory } from "./session-diagnostics.ts";
 import { readSessionSignals } from "./session-signals.ts";
 import type { ChallengeDetected } from "./session-signals.ts";
 
+import { localProfileInfo } from "./profile-info.ts";
+import { runPersistentSession } from "./session-lifecycle.ts";
+
 export const dashboardUrl = "https://www.naukri.com/mnjuser/homepage";
 
 async function privateDirectory(directory: string) {
@@ -27,39 +30,23 @@ export async function withLocalSession(
   action: (context: BrowserContext, signal: AbortSignal) => Promise<void>,
   options: { slowMo?: number } = {},
 ) {
-  const { profileDirectory } = localChromePaths();
-  const executablePath = await resolveChromeExecutable();
+  const { profileDirectory, candidates } = localChromePaths();
+  const executablePath = await resolveChromeExecutable(candidates);
   await assertOutsideRepository(profileDirectory);
+  if (process.env.NAUKRI_DIAGNOSTIC === "true") console.log(JSON.stringify(await localProfileInfo(profileDirectory)));
   // Preserve macOS privacy; POSIX masks do not establish Windows ACLs.
   const previousMask = process.platform === "darwin" ? process.umask(0o077) : undefined;
-  const controller = new AbortController();
-  let context: BrowserContext | undefined;
-  const stop = () => {
-    process.exitCode = 130;
-    controller.abort();
-    void context?.close().catch(() => {});
-  };
-  process.once("SIGINT", stop);
-  process.once("SIGTERM", stop);
   try {
     await privateDirectory(join(profileDirectory, ".."));
     await privateDirectory(profileDirectory);
     await assertOutsideRepository(profileDirectory);
-    context = await chromium.launchPersistentContext(profileDirectory, {
+    await runPersistentSession(() => chromium.launchPersistentContext(profileDirectory, {
       ...localChromeLaunchOptions(),
       executablePath, headless: false, timeout: 20_000,
       slowMo: options.slowMo ?? 0,
-    });
-    context.once("close", () => controller.abort());
-    if (!controller.signal.aborted) await action(context, controller.signal);
+    }), action);
   } finally {
-    try {
-      await context?.close();
-    } finally {
-      process.removeListener("SIGINT", stop);
-      process.removeListener("SIGTERM", stop);
-      if (previousMask !== undefined) process.umask(previousMask);
-    }
+    if (previousMask !== undefined) process.umask(previousMask);
   }
 }
 

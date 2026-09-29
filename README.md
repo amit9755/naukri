@@ -135,8 +135,9 @@ scope problems without printing frame URLs, HTML, or control values.
 
 With `NAUKRI_DIAGNOSTIC=true`, failed field detection leaves Chrome open and asks:
 `Diagnostic stopped. Inspect the visible page, then type done to close.`
-This pause only closes the browser afterward; it never resumes automation or
-retries detection. No DOM HTML, field values, or input attributes are printed.
+After this pause, an already authenticated current page is verified read-only
+before closing. It never resumes credential filling, retries detection, or submits
+Login again. No DOM HTML, field values, or input attributes are printed.
 A detected challenge or access restriction stops automation for manual handling.
 
 For this diagnostic run in Windows **CMD** (not PowerShell):
@@ -209,6 +210,61 @@ The save command restores the exact original name before submitting and verifies
 it afterward. On uncertainty it stops without retrying the save or submitting an
 automatic correction. No selectors or profile-editing behavior were changed for
 platform support. There is no stealth, challenge bypass, or proxy rotation.
+
+## Persistent profile identity and shutdown
+
+`naukri:login`, `naukri:validate`, and `naukri:refresh-name` all call the same
+`withLocalSession` helper. It resolves `localChromePaths()` once and launches
+installed Chrome with `launchPersistentContext`, `headless: false`, and a 20-second
+launch timeout. Windows sandboxing and the two existing excluded desktop flags
+are shared. No command sets a Chrome channel, `--profile-directory`, or storageState.
+Chrome manages the browser profile within the dedicated user-data directory.
+Login and validation have zero action delay; refresh retains its 700 ms action delay.
+
+The Windows directory is `%LOCALAPPDATA%\NaukriAutomation\ChromeProfile`;
+macOS remains `~/Library/Application Support/NaukriAutomation/ChromeProfile`.
+There was no code-level path or launch mismatch among these three commands.
+`test:naukri-local-chrome` deliberately uses a disposable anonymous profile and
+cannot preserve a login for these commands. The separate Next.js browser helper
+also uses an unrelated headless browser.
+
+`npm run naukri:profile-info` checks Chrome availability and directory metadata
+without launching Chrome, creating a profile, or reading profile files. Its
+`profilePath` masks the entire user-specific prefix. `profileIdentity` is a
+16-character SHA-256 prefix of platform plus normalized path (case-normalized on
+Windows), never of browser data. Matching identities establish matching configured
+paths, not proof that authentication has persisted or remains valid on Naukri.
+
+From Windows CMD, use the same terminal/account for each command:
+
+```cmd
+cd /d C:\work\naukri
+set "NAUKRI_DIAGNOSTIC=true"
+npm run naukri:profile-info
+npm run naukri:login
+npm run naukri:validate
+```
+
+After manually reaching the dashboard, leave Chrome open and type `done` in the
+login terminal. The current page must pass the existing authentication checks,
+then a read-only dashboard visit confirms accessibility. The script awaits one
+graceful `context.close()` promise before its final success result. Do not close
+Chrome yourself before confirmation. An unauthenticated `done` is reported as a
+failure. No cookies are copied or exported, and the existing profile is never reset.
+
+To compare refresh's identity afterward, its existing dry run does not save:
+
+```cmd
+npm run naukri:refresh-name
+set "NAUKRI_DIAGNOSTIC="
+```
+
+Each diagnostic launch prints the same sanitized profile information before launch.
+If identities differ, check the Windows account and LOCALAPPDATA environment used
+by each terminal; no environment values or profile contents need to be shared.
+If identities match but validation redirects to login, the session did not remain
+usable; matching paths alone cannot establish the cause. No automatic login retry
+or cookie manipulation is performed.
 
 ## Separate Next.js browser setup
 

@@ -80,8 +80,12 @@ export async function runLoginFlow(
     if (diagnosticMode && !signal.aborted && !diagnosticInspectionStarted) {
       diagnosticInspectionStarted = true;
       await diagnosticInspection(stopped);
+      // The user may have completed login while inspecting this window. Verify
+      // that state read-only; never resume credential filling or submission.
+      const current = await inspect(page, null);
+      if (current.authenticated && current.profileAccessible && !signal.aborted) return await verifyManualCompletion();
     }
-    // Inspection is a close-only pause, never a retry or manual-login trigger.
+    // An unauthenticated inspection keeps its original diagnostic failure.
     return stopped;
   };
   const challenge = (state: Awaited<ReturnType<typeof inspectSession>>) => {
@@ -96,19 +100,13 @@ export async function runLoginFlow(
     }
     return state;
   };
-  let manualInspectionStarted = false;
-  const finishManually = async (reason: string, stage: LoginStage = "manual-verification"): Promise<LoginStatus> => {
-    if (signal.aborted) return result("operation cancelled");
-    manualInspectionStarted = true;
-    mark(stage, reason);
-    // No timeout: keep Chrome open until the user confirms, cancels or closes it.
-    if (!await manualCompletion(diagnostic.manualVerificationRequired, { ...diagnostic })) return result(`${reason}; manual inspection cancelled`);
-    if (signal.aborted) return result("operation cancelled");
+  const verifyManualCompletion = async (): Promise<LoginStatus> => {
     const current = await inspect(page, null);
     diagnostic.manualVerificationRequired ||= challenge(current);
     if (!officialPage(page)) return result("unexpected page origin");
     if (current.accessDenied) return result("access denied");
     if (challenge(current)) return result("manual verification incomplete");
+    if (!current.authenticated || !current.profileAccessible) return result("manual completion is not authenticated; session not confirmed");
     mark("authentication-check", "verifying authenticated page after manual completion");
     const navigation = await dashboard(page);
     if (navigation.navigationError) return result("authenticated page navigation failed");
@@ -117,6 +115,16 @@ export async function runLoginFlow(
     diagnostic.manualVerificationRequired ||= challenge(state);
     const authenticated = officialPage(page) && !!navigation.status && navigation.status >= 200 && navigation.status < 300 && state.authenticated && !signal.aborted;
     return result(authenticated ? "authentication confirmed" : "authentication not confirmed", authenticated);
+  };
+  let manualInspectionStarted = false;
+  const finishManually = async (reason: string, stage: LoginStage = "manual-verification"): Promise<LoginStatus> => {
+    if (signal.aborted) return result("operation cancelled");
+    manualInspectionStarted = true;
+    mark(stage, reason);
+    // No timeout: keep Chrome open until the user confirms, cancels or closes it.
+    if (!await manualCompletion(diagnostic.manualVerificationRequired, { ...diagnostic })) return result(`${reason}; manual inspection cancelled`);
+    if (signal.aborted) return result("operation cancelled");
+    return await verifyManualCompletion();
   };
 
   try {
