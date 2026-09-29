@@ -1,12 +1,12 @@
 import type { NextConfig } from "next";
-
 const nextConfig: NextConfig = {
-  serverExternalPackages: ["playwright-core", "@sparticuz/chromium-min"],
-  outputFileTracingIncludes: {
-    // Playwright loads this dynamically; automatic tracing misses it.
-    "/api/test-browser": ["./node_modules/playwright-core/browsers.json"],
-    "/api/test-naukri": ["./node_modules/playwright-core/browsers.json"],
+  async headers() {
+    return [{ source: "/:path*", headers: [
+      { key: "X-Content-Type-Options", value: "nosniff" },
+      { key: "X-Frame-Options", value: "DENY" },
+      { key: "Referrer-Policy", value: "no-referrer" },
+      { key: "Content-Security-Policy", value: "frame-ancestors 'none'; object-src 'none'; base-uri 'self'" },
+    ] }];
   },
 };
-
 export default nextConfig;

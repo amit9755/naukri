@@ -80,6 +80,7 @@ withLocalSession(async (context) => {
 }, { slowMo: 700 }).catch((error: unknown) => {
   console.error(JSON.stringify({
     success: false, stage, saveAttempted,
+    errorCode: error instanceof Error && error.message === "ACCESS_CHECK_FAILED" ? "AUTH_REQUIRED" : "REFRESH_FAILED",
     originalNamePreserved: null,
     message: error instanceof LocalChromeError ? error.message : "Stopped without retry. Verify your name manually if a save was attempted; no automatic correction was submitted.",
   }));

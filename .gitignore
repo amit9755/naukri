@@ -34,7 +34,7 @@ yarn-error.log*
 .env*
 !.env.example
 
-# Private browser state (reserved for later phases)
+# Private browser authentication state
 playwright/.auth/
 storageState*.json
 
@@ -62,3 +62,12 @@ credentials*
 *.pfx
 id_rsa*
 id_ed25519*
+
+# Windows agent identity, durable journal, and local logs
+agent.json
+agent-state.json
+agent.lock
+agent.stop
+logs/
+*.log
+*.tmp

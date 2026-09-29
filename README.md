@@ -1,7 +1,301 @@
-# Naukri personal automation
+# Naukri Automation
 
-Local Naukri session commands support macOS and Windows. The separate Next.js
-public-page browser test is described below.
+A private Next.js dashboard on Vercel controls an outbound Windows agent. Supabase
+stores agent identity hashes, configuration, commands and sanitized run history.
+Only Windows opens Chrome and runs the existing same-name save workflow.
+
+```text
+Browser → Vercel dashboard / authenticated APIs → Supabase
+                         ↑ HTTPS polling
+                   Windows agent
+                         ↓ fixed RUN_REFRESH action
+           existing persistent Chrome → Naukri
+```
+
+There is no inbound Windows listener, remote shell, Windows Task Scheduler,
+server-side Naukri browser, cookie transfer or automatic Naukri login. The old
+`/api/test-browser` and `/api/test-naukri` endpoints are retired (HTTP 410).
+`browser:install` is retained for compatibility but is not needed by this design.
+
+## Setup: Supabase
+
+1. Create/use a Supabase project. In Authentication, enable email/password login,
+   disable public signup, and manually create/confirm your own dashboard user.
+   This is a separate dashboard identity, not your Naukri credentials. Keep its
+   password in your password manager; do not put it in environment variables.
+2. Copy that user's UUID for `DASHBOARD_USER_ID`. Only this one user is authorized.
+   The server also verifies ownership of each agent before mutations.
+3. Run `supabase/migrations/202609290001_agent_control.sql` once in the Supabase
+   SQL editor (or apply it with your normal Supabase migration tooling). It creates
+   four tables, indexes, constraints and transactional RPC functions. It assumes
+   Supabase's existing `auth.users`, `anon`, `authenticated`, and `service_role`.
+4. Leave RLS enabled. Browser roles have no direct table/RPC privileges. Only the
+   Vercel server uses the service-role key. Do not add public RLS policies.
+5. In Auth URL settings, set the Site URL to your eventual HTTPS dashboard origin.
+   The password flow uses no external callback. Disable unused Auth providers and
+   retain Supabase Auth rate limits. Configure trusted recovery email/SMTP if needed.
+
+## Setup: Vercel
+
+Import this repository as a Next.js project, choose **Node.js 24.x**, and use
+`npm ci` / `npm run build`. Set these **server-only** environment variables in
+Vercel, then deploy manually:
+
+| Variable | Value |
+| --- | --- |
+| `SUPABASE_URL` | Your Supabase project's HTTPS URL |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase service-role key; Vercel only |
+| `DASHBOARD_USER_ID` | UUID of the single allowed Supabase Auth user |
+| `APP_ORIGIN` | Exact HTTPS deployment/custom origin, without a trailing slash |
+| `AGENT_ENROLLMENT_SECRET` | Random URL-safe shared enrollment secret, at least 32 characters |
+
+Generate the enrollment secret privately using a password manager (for example,
+64 random hexadecimal characters). Temporarily place the same value in the local
+Windows `.env` for registration. Never use a Naukri password as any of these keys.
+There are no `NEXT_PUBLIC_` variables or browser-exposed service credentials.
+Do not set `NAUKRI_USERNAME` or `NAUKRI_PASSWORD` on Vercel.
+
+Open `https://your-deployment/dashboard`; unauthenticated visitors go to `/login`.
+Sign in using the Supabase dashboard user. Access and refresh tokens stay in
+HttpOnly, Secure, SameSite=Strict cookies. Mutation APIs additionally check Origin.
+Use a stable production origin; previews with a different origin fail this check.
+If Vercel Deployment Protection is enabled, ensure your production agent can reach
+its authenticated API routes; a Vercel protection page cannot be used as an API.
+Do not enable request-body/header logging in external observability tools.
+
+## Setup: Windows (CMD)
+
+Use the same Windows user and `LOCALAPPDATA` as your working Naukri session.
+Installed Chrome and Node.js 24.x are required. Do not move or reset ChromeProfile.
+Once you have transferred these changes through your normal Git workflow:
+
+```cmd
+cd /d C:\work\naukri
+git pull
+npm ci
+if not exist .env copy .env.example .env
+notepad .env
+git check-ignore .env
+npm run naukri:profile-info
+```
+
+Edit `.env` privately. On **Windows only**, set:
+
+| Variable | Purpose |
+| --- | --- |
+| `AGENT_SERVER_URL` | Same HTTPS origin as `APP_ORIGIN`, no path/query |
+| `AGENT_ENROLLMENT_SECRET` | Temporary shared enrollment secret |
+| `AGENT_NAME` | Optional non-personal display name, e.g. Windows laptop |
+| `NAUKRI_USERNAME`, `NAUKRI_PASSWORD` | Optional local first-login only; existing entries may stay local |
+
+Do not copy the Supabase service key onto Windows. Leave server-only example
+entries empty or remove them from this local file. Leave `DEBUG` and `PWDEBUG`
+unset. The refresh child does not receive Naukri credentials, Supabase keys or
+agent secrets; it relies on Chrome's existing authenticated profile.
+
+Close any dedicated-profile Chrome window before starting the agent. Start:
+
+```cmd
+npm run naukri:agent
+```
+
+First startup creates `%LOCALAPPDATA%\NaukriAutomation\agent.json` with random
+agent/machine UUIDs and a 256-bit random secret. The server stores only its hash.
+Registration binds the agent to the allowed dashboard owner; a lost response can
+be replayed safely. The local identity is pinned to its server origin. Do not
+share, move, print or commit this file. Windows uses your LocalAppData ACLs.
+
+Check the dashboard: the agent should become ONLINE with automation **disabled**.
+Remove `AGENT_ENROLLMENT_SECRET` from Windows `.env` after successful registration;
+rotate/remove it on Vercel to close enrollment, then redeploy. Existing agents use
+their own secrets and do not need enrollment. Start-up with an existing registered
+identity never creates another identity. Registration failures are sanitized.
+
+In another CMD terminal, inspect status and install optional per-user auto-start:
+
+```cmd
+cd /d C:\work\naukri
+npm run naukri:agent:status
+npm run naukri:agent:install
+```
+
+Installation creates `Naukri Agent.lnk` in your user's Startup folder. It starts
+a hidden PowerShell supervisor **after your next Windows sign-in**, with a 30-second
+agent restart delay and local logs. No administrator, service, scheduled task, or
+permanent CMD window is required. Chrome itself remains visible. Keep this checkout
+in the same location, with Node available on the user's PATH. Enterprise execution
+policy may require your administrator to approve the scripts; no policy bypass is
+installed. Nothing runs while the laptop is off, asleep, or signed out.
+
+## Daily operation and scheduling
+
+The dashboard polls every 12 seconds. ONLINE means a heartbeat within two minutes;
+a stale heartbeat becomes OFFLINE. The agent heartbeats approximately every
+60 seconds and polls for commands every 20 seconds. Network errors use backoff up
+to five minutes; stale configuration prevents new claims until heartbeat recovers.
+
+Set the schedule and enable it deliberately. Default: **06:30 Asia/Kolkata**,
+once per local calendar date. Catch-up defaults on: starting late permits one
+scheduled attempt that day, not a backlog of prior days. With catch-up off, only
+the scheduled minute is eligible; a late poll can miss it. Schedule edits apply
+within a heartbeat, and the database rechecks enabled/timezone/time when claiming.
+DST uses Temporal's compatible rule: earlier occurrence on an overlap, forward
+through a gap. Server-side scheduling uses the same rule. Timezone database
+versions on Node and PostgreSQL should be kept current.
+
+`last_scheduled_date`, a unique daily command constraint and a local durable journal
+prevent duplicate scheduled execution after restart. A failed/auth-required attempt
+still consumes that day's scheduled attempt. Changing the time does not permit a
+second scheduled run that day. Disabling automation prevents new scheduled jobs;
+it does not cancel an already queued/running command. Manual Run now remains
+available even when the schedule is disabled.
+
+**Run now queues a real single profile save**, including while Windows is offline;
+the queued command runs when the agent reconnects. It creates one PENDING command,
+atomically claimed as RUNNING, then SUCCESS, FAILED or AUTH_REQUIRED. Another
+PENDING/RUNNING command returns 409 and is shown in the dashboard. No profile save
+is retried automatically. Avoid queuing a manual run near the scheduled time if
+you do not want both a manual and a daily run; these are distinct intentional jobs.
+
+Next run is the scheduled time or the currently due catch-up, shown in the configured
+timezone. When offline this is eligibility, not a promise that the laptop will wake.
+History shows the latest 30 runs. `refreshTimestampVerified:false` is displayed
+separately and does not invalidate a confirmed original-name save/reload verification.
+
+## Stop, session restoration and updates
+
+Stop gracefully from another terminal:
+
+```cmd
+cd /d C:\work\naukri
+npm run naukri:agent:stop
+npm run naukri:agent:status
+```
+
+The agent finishes any active refresh before exiting; it never kills Chrome.
+Wait for `running:false` and Chrome to close before another profile command.
+The stop marker also stops the supervisor. A foreground `npm run naukri:agent`
+clears that marker; install alone does not clear it. To resume automatic startup,
+remove **only** the stop marker and open the Startup shortcut (or sign out/in):
+
+```cmd
+del "%LOCALAPPDATA%\NaukriAutomation\agent.stop"
+start "" "%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\Naukri Agent.lnk"
+```
+
+If the dashboard says **Naukri login required on Windows**, disable scheduling,
+stop the agent and wait for it to finish. Then restore the session locally:
+
+```cmd
+npm run naukri:login
+npm run naukri:validate
+```
+
+Complete verification manually. Leave Chrome open until you type `done` in the
+terminal; authentication is checked before graceful context closure. Do not export
+cookies. After validation succeeds, restart the agent and re-enable the schedule.
+The session badge reflects the last agent refresh, so it remains AUTH_REQUIRED
+until a later successful run reports back. The agent never calls the login script.
+For updates, stop and wait, pull changes, run `npm ci`, then restart.
+
+To uninstall auto-start, stop the agent and delete only its shortcut:
+
+```cmd
+del "%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\Naukri Agent.lnk"
+```
+
+This leaves the identity, logs and existing Chrome profile intact.
+
+## Logs, recovery and secret rotation
+
+```cmd
+npm run naukri:agent:status
+type "%LOCALAPPDATA%\NaukriAutomation\logs\agent.log"
+type "%LOCALAPPDATA%\NaukriAutomation\logs\supervisor.log"
+```
+
+Logs contain fixed lifecycle/error codes, timestamps, command UUIDs, source,
+status and allowlisted boolean results. Each log rotates at approximately 1 MB
+with one backup. Child stdout/stderr are kept only in bounded memory and never
+written to logs or sent to the server. Do not inspect/share `agent.json`, profile
+files, cookies, DOM dumps, debug traces, or populated environment files.
+
+| Symptom | Check/action |
+| --- | --- |
+| Agent OFFLINE | Windows awake/signed in, Node24, supervisor/status, outbound HTTPS, Vercel protection and environment |
+| Registration fails | Same enrollment secret on both sides, correct owner UUID/migration, HTTPS origin; no identity deletion |
+| Heartbeat/poll failures | Network and Supabase availability; fixed-code logs only; network retries do not repeat saves |
+| AUTH_REQUIRED | Stop and restore Naukri session manually as above |
+| REFRESH_FAILED / INVALID_RESULT | Inspect Windows and run read-only validation; no automatic save retry |
+| CHROME_FAILED | Check Node/Chrome availability and local process launch; do not remove browser locks manually |
+| AGENT_RESTARTED | Crash happened after execution was marked started; save outcome may be unknown; inspect before another run |
+| STALE_RUNNING | After 30 minutes a status/claim request terminalizes uncertainty and disables scheduling; inspect Windows before re-enabling |
+| Active command conflict | Wait for the existing operation; do not create retries |
+
+The journal records claim key before requesting work, started before executing,
+and completed before reporting. Lost claim responses replay the same command;
+lost completion responses resend only sanitized results. A crash after started
+reports uncertainty without rerunning it, even if the save may not have occurred.
+This favors at-most-once attempts over automatic recovery of uncertain saves.
+No distributed design can guarantee a confirmed external save across a crash.
+Stale reconciliation never requeues work and is invoked on authenticated status
+or claim requests, not by a separate cron service. Do not delete the journal to
+force recovery. If a child Chrome remains open after a crash, inspect and close
+it normally before queuing anything else.
+
+For routine **agent secret rotation**, stop and wait, then:
+
+```cmd
+npm run naukri:agent:rotate
+npm run naukri:agent
+```
+
+Rotation stages a new random secret locally, updates the server with the old
+credential, and persists the new one. An interrupted rotation verifies the staged
+secret before retrying the update. No secret is printed. If the secret is suspected
+compromised, revoke its server hash from the Supabase admin console immediately
+and inspect pending work; do not rely on routine rotation while an attacker has
+access. Re-enrollment/recovery requires deliberate admin assistance, never copying
+another agent's identity. Rotate the Vercel service-role key through Supabase and
+update/redeploy Vercel; it does not belong in agent files.
+
+## Security and checks
+
+- Authentication/owner authorization on dashboard APIs; strong random agent
+  bearer secrets in headers, hashed storage and timing-safe comparisons.
+- Strict command allowlist and fixed local Node executable/script arguments;
+  no shell or remote-supplied flags, file paths, URLs or code execution.
+- Bounded JSON input, fixed error responses, safe result projection, HttpOnly
+  cookies, Origin checks, no-store responses, RLS and service-only RPC grants.
+- Database active/daily uniqueness, row-lock claiming, claim replay, one local
+  agent lock and a single-flight worker; Chrome's persistent profile lock remains.
+- No automatic login, OTP/CAPTCHA/MFA interaction, stealth, spoofing or proxies.
+- `.env*` (except the blank example), identities, journals, logs and browser
+  authentication material are gitignored. Never add them with `git add -f`.
+
+Run local checks without launching Chrome:
+
+```cmd
+npm run lint
+npx tsc --noEmit
+npm test
+npm run build
+```
+
+Tests use fake Naukri/Playwright operations and an isolated in-memory PostgreSQL
+engine for the migration/transaction rules. They do not contact Naukri/Supabase,
+install Startup entries or perform profile saves. A real Supabase/Vercel deployment,
+Windows Startup launch and end-to-end run require your manual configuration and
+validation; they were not executed during development. PGlite validates SQL but
+does not replace load/concurrency testing against deployed PostgreSQL.
+
+## Existing local commands and Chrome behavior
+
+The following reference remains applicable independently of the agent. Stop the
+agent before opening the dedicated profile with another command. Existing login,
+validate, profile-info, dry-run and explicit `--save` commands are retained. The
+refresh selectors and name/save/reload workflow are unchanged; only a fixed safe
+error code was added to its failure result for the agent adapter.
 
 ## Local Naukri session (macOS and Windows)
 
@@ -225,8 +519,7 @@ The Windows directory is `%LOCALAPPDATA%\NaukriAutomation\ChromeProfile`;
 macOS remains `~/Library/Application Support/NaukriAutomation/ChromeProfile`.
 There was no code-level path or launch mismatch among these three commands.
 `test:naukri-local-chrome` deliberately uses a disposable anonymous profile and
-cannot preserve a login for these commands. The separate Next.js browser helper
-also uses an unrelated headless browser.
+cannot preserve a login for these commands. The retired Next.js browser routes return HTTP 410 and never launch a browser.
 
 `npm run naukri:profile-info` checks Chrome availability and directory metadata
 without launching Chrome, creating a profile, or reading profile files. Its
@@ -265,64 +558,3 @@ by each terminal; no environment values or profile contents need to be shared.
 If identities match but validation redirects to login, the session did not remain
 usable; matching paths alone cannot establish the cause. No automatic login retry
 or cookie manipulation is performed.
-
-## Separate Next.js browser setup
-
-Use Node.js 24.x locally and on Vercel. Dependencies are pinned:
-`playwright-core@1.63.0` targets Chromium 153 and
-`@sparticuz/chromium-min@153.0.0` provides serverless launch support.
-
-Locally, Playwright launches its native headless Chromium. On Vercel, the helper
-downloads the pinned Linux release pack for the runtime architecture and extracts
-it into temporary storage. Cold starts depend on GitHub release availability.
-The desktop browser is not deployed. Both packages are externalized in Next.js.
-
-Reference: https://github.com/Sparticuz/chromium
-
-## Local test
-
-Run these individually, checking each result:
-
-1. `npm ci`
-2. `npm run browser:install`
-3. `npm run dev`
-4. In another terminal: `curl --fail-with-body http://localhost:3000/api/test-browser`
-
-Expected JSON:
-
-```json
-{
-  "success": true,
-  "browser": "launched",
-  "pageTitle": "Example Domain",
-  "timestamp": "<current ISO timestamp>"
-}
-```
-
-The endpoint uses Node.js with a 120-second function limit, a 20-second launch
- timeout, and a 25-second navigation timeout. It makes one browser attempt,
-checks the HTTP response and title, and closes the browser in `finally`.
-Errors return HTTP 500 with a stage; raw browser errors and secrets are omitted.
-Responses are not cached. The target is fixed to https://example.com.
-
-## Vercel test — after local confirmation
-
-Deploy as a Next.js project with Node.js 24.x. Set `ENABLE_BROWSER_TEST=true`
-for the deployment environment before deployment. Open `/api/test-browser`
-on the deployed URL and verify the JSON above. Local success alone does not
-validate the Linux binary or Vercel networking.
-
-The test endpoint is public while enabled. Retain Vercel deployment protection
-where available. Set `ENABLE_BROWSER_TEST=false` and redeploy after testing
-to disable the endpoint (HTTP 404). No secrets are needed for this phase.
-
-Stop until both local and deployed tests are confirmed before Phase 2.
-
-## Validation
-
-`npm run lint` and `npm run build` passed. The starter UI downloads Google Fonts
-at build time. The local endpoint returned `success: true` and
-`pageTitle: "Example Domain"`. These checks ran on the workstation's Node.js 26;
-the configured Vercel Node.js 24 runtime still needs deployment validation.
-
-Vercel validation is pending.
