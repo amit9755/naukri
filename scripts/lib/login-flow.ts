@@ -7,11 +7,14 @@ import { checkExistingSession } from "./existing-session.ts";
 import type { ExistingSessionStage, DashboardNavigation } from "./existing-session.ts";
 import type { SessionErrorCategory } from "./session-diagnostics.ts";
 
+import type { ChallengeDetected } from "./session-signals.ts";
+
 export type LoginCredentials = { username: string; password: string };
 export type LoginStage = "launch" | "navigation" | ExistingSessionStage | "login-page-detection" |
   "username-field-detection" | "password-field-detection" | "credential-fill" |
   "submit-button-detection" | "submit" | "post-submit-navigation" | "authentication-check" | "manual-verification";
 export type LoginStatus = Partial<LoginStructure> & {
+  challengeDetected?: ChallengeDetected;
   existingSessionAuthenticated?: boolean;
   errorCategory?: SessionErrorCategory;
   authenticated: boolean;
@@ -56,7 +59,7 @@ export async function runLoginFlow(
   diagnosticInspection: (status: LoginStatus) => Promise<void> = async () => {},
 ): Promise<LoginStatus> {
   const diagnostic: LoginStatus = {
-    authenticated: false, profileAccessible: false, manualVerificationRequired: false,
+    authenticated: false, profileAccessible: false, manualVerificationRequired: false, challengeDetected: "none",
     credentialsConfigured: !!credentials, usernameFieldFound: false, passwordFieldFound: false,
     submitButtonFound: false, stage: "navigation", reason: "opening authenticated page",
   };
@@ -81,7 +84,10 @@ export async function runLoginFlow(
     // Inspection is a close-only pause, never a retry or manual-login trigger.
     return stopped;
   };
-  const challenge = (state: Awaited<ReturnType<typeof inspectSession>>) => state.verificationDetected || state.captchaDetected;
+  const challenge = (state: Awaited<ReturnType<typeof inspectSession>>) => {
+    diagnostic.challengeDetected = state.accessDenied ? "access-restriction" : state.challengeDetected;
+    return state.verificationDetected || state.captchaDetected;
+  };
   const observe = async (status: number | null) => {
     let state = await inspect(page, status);
     for (let i = 0; i < 6 && state.outcome === "UNKNOWN" && !signal.aborted; i++) {
@@ -126,6 +132,7 @@ export async function runLoginFlow(
     }
     if (existing.reason === "access denied") {
       diagnostic.manualVerificationRequired = true;
+      diagnostic.challengeDetected = "access-restriction";
       return await finishManually("access denied; manual inspection required");
     }
     if (existing.existingSessionAuthenticated !== false) return result(existing.reason);
@@ -138,6 +145,7 @@ export async function runLoginFlow(
     let state = await observe(response?.status() ?? null);
     if (state.accessDenied) {
       diagnostic.manualVerificationRequired = true;
+      diagnostic.challengeDetected = "access-restriction";
       return await finishManually("access denied; manual inspection required");
     }
     if (challenge(state)) {
@@ -219,6 +227,7 @@ export async function runLoginFlow(
     mark("post-submit-navigation", "observing login response");
     for (let i = 0; i < 10 && !signal.aborted; i++) {
       state = await inspect(page, null);
+      challenge(state); // Update the sanitized category before any access-restriction handoff.
       if (!officialPage(page) || state.accessDenied) return await finishManually("login response requires manual inspection", "post-submit-navigation");
       if (challenge(state)) {
         diagnostic.manualVerificationRequired = true;

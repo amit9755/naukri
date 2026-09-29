@@ -8,6 +8,9 @@ import { assertOutsideRepository, LocalChromeError, localChromeLaunchOptions, lo
 import { sessionErrorCategory } from "./session-diagnostics.ts";
 import type { SessionErrorCategory } from "./session-diagnostics.ts";
 
+import { readSessionSignals } from "./session-signals.ts";
+import type { ChallengeDetected } from "./session-signals.ts";
+
 export const dashboardUrl = "https://www.naukri.com/mnjuser/homepage";
 
 async function privateDirectory(directory: string) {
@@ -81,27 +84,15 @@ export async function navigateToDashboard(page: Page, onError?: (category: Sessi
 // Passive heuristics only. No account fields, cookies, input values, or page text
 // leave the browser; unknown pages must not be treated as authenticated.
 export async function inspectSession(page: Page | Frame, status: number | null) {
-  const signals = await page.evaluate(() => {
-    const visible = (element: Element) => {
-      const style = getComputedStyle(element);
-      return style.display !== "none" && style.visibility !== "hidden" && element.getClientRects().length > 0;
-    };
-    const text = `${document.title}\n${document.body?.innerText ?? ""}`;
-    const captchaDetected = /\bcaptcha\b|i(?:'|’)m not a robot/i.test(text) ||
-      Array.from(document.querySelectorAll("iframe")).some((frame) =>
-        visible(frame) && /captcha|challenges\.cloudflare\.com/i.test(`${frame.src} ${frame.title}`));
-    const accessDenied = /access denied|access forbidden|request (?:was )?(?:blocked|rejected)|you (?:have been|are) blocked|unusual traffic|pardon our interruption/i.test(text);
-    const verificationDetected = captchaDetected || /checking your browser|just a moment|verify (?:that )?you(?:'re| are) (?:a )?human|security verification|verification code|\botp\b|one[- ]time (?:password|passcode|code)|verify your (?:identity|email|mobile|phone)|enable javascript and cookies to continue|bot protection/i.test(text);
-    const passwordForm = Array.from(document.querySelectorAll('input[type="password"]')).some(visible);
-    // Require positive account evidence, not merely a 200 response or dashboard URL.
-    const signOutVisible = Array.from(document.querySelectorAll('a, button, [role="button"], [role="menuitem"]'))
-      .some((element) => visible(element) && /^(?:log\s*out|sign\s*out)$/i.test(element.textContent?.trim() ?? ""));
-    return { captchaDetected, accessDenied, verificationDetected, passwordForm, signOutVisible };
-  });
+  const signals = await page.evaluate(readSessionSignals);
   const url = new URL(page.url());
   const onNaukri = url.hostname === "www.naukri.com" || url.hostname === "naukri.com";
   const accessDenied = signals.accessDenied || status === 403 || status === 429;
-  const verificationDetected = signals.verificationDetected || /\/challenge|\/verify|\/verification|\/otp/i.test(url.pathname);
+  const challengeRoute = /\/(?:challenge|verify|verification|otp)(?:\/|$)/i.test(url.pathname);
+  const verificationDetected = signals.verificationDetected || challengeRoute;
+  const challengeDetected: ChallengeDetected = accessDenied ? "access-restriction" :
+    signals.captchaDetected ? "captcha" : signals.mfaDetected ? "mfa" : signals.otpInput ? "otp" :
+    verificationDetected ? "unknown" : "none";
   const loginRequired = signals.passwordForm || /\/(?:login|signin|sign-in)(?:\/|$)/i.test(url.pathname);
   const blocked = accessDenied || signals.captchaDetected || verificationDetected;
   const accountRoute = onNaukri && /^\/mnjuser(?:\/|$)/.test(url.pathname);
@@ -109,7 +100,7 @@ export async function inspectSession(page: Page | Frame, status: number | null) 
     signals.signOutVisible && !blocked && !loginRequired;
   return {
     authenticated, profileAccessible: authenticated,
-    accessDenied, captchaDetected: signals.captchaDetected, verificationDetected,
+    accessDenied, captchaDetected: signals.captchaDetected, verificationDetected, challengeDetected,
     loginRequired,
     evidence: { accountRoute, signOutVisible: signals.signOutVisible },
     outcome: blocked ? "BLOCKED" : loginRequired ? "AUTH_REQUIRED" : authenticated ? "AUTHENTICATED" : "UNKNOWN",

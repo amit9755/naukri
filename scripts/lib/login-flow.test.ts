@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { runInNewContext } from "node:vm";
+import { readSessionSignals } from "./session-signals.ts";
+import { inspectSession } from "./local-session.ts";
 import type { Frame, Page } from "playwright-core";
 import { credentialsFromEnvironment, runLoginFlow } from "./login-flow.ts";
 
@@ -59,6 +62,7 @@ function fixture(options: { already?: boolean; ambiguous?: boolean; challengeAft
     return ({
     authenticated, profileAccessible: authenticated, accessDenied: !!options.denied,
     captchaDetected: challenged, verificationDetected: challenged, loginRequired: !authenticated,
+    challengeDetected: challenged ? "captcha" as const : "none" as const,
     evidence: { accountRoute: authenticated, signOutVisible: authenticated },
     outcome: challenged ? "BLOCKED" : authenticated ? "AUTHENTICATED" : "AUTH_REQUIRED",
   }); };
@@ -349,4 +353,25 @@ test("ambiguous main and child forms stop before filling any credentials", async
   assert.equal(status.frameCount, 2);
   assert.deepEqual(f.actions, []);
   assert.equal(f.clicks(), 0);
+});
+
+
+test("normal login alternatives pass the real challenge classifier and submit credentials once", async () => {
+  const f = fixture();
+  const signals = runInNewContext(`(${readSessionSignals.toString()})()`, {
+    document: {
+      title: "Login",
+      body: { innerText: "Email ID / Username Password Login Use OTP to Login Forgot Password Sign in with Google" },
+      querySelectorAll: () => [],
+    },
+  });
+  const normal = await inspectSession({ url: () => "https://www.naukri.com/nlogin/login", evaluate: async () => signals } as unknown as Page, 200);
+  assert.equal(normal.challengeDetected, "none");
+  const status = await runLoginFlow(f.page, new AbortController().signal, credentials, f.manual,
+    async () => { const state = await f.inspect(); return state.authenticated ? state : normal; }, f.dashboard);
+  assert.equal(status.authenticated, true);
+  assert.equal(status.manualVerificationRequired, false);
+  assert.equal(status.challengeDetected, "none");
+  assert.deepEqual(f.actions, ["username", "password"]);
+  assert.equal(f.clicks(), 1);
 });

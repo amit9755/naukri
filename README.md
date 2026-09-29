@@ -83,6 +83,16 @@ runtime; an unfamiliar layout stops without submission. It never retries a login
 Playwright debug logging (`DEBUG` or `PWDEBUG`) must be unset because debug output
 can expose input values. No tracing, screenshots, or credential exports are enabled.
 
+Challenge classification distinguishes alternative login links from active
+verification. `Use OTP to Login`, `Forgot Password`, and `Sign in with Google`
+do not by themselves trigger manual verification. Visible OTP/code inputs,
+authenticator/MFA requests, visible CAPTCHA UI, explicit verification prompts,
+and access restrictions still stop automated interaction. No challenge is solved.
+The sanitized `challengeDetected` field reports `none`, `otp`, `captcha`, `mfa`,
+`access-restriction`, or `unknown`. A normal form is submitted once; if it remains
+unauthenticated, the command reports that and waits for manual inspection without
+resubmitting. Credential values are never included in diagnostics.
+
 If a challenge is detected, automated interaction stops and Chrome stays open for
 you to complete it manually. Type `done` only after the signed-in dashboard is
 visible. If a submitted login cannot be confirmed (including an uncertain click
