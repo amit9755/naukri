@@ -50,7 +50,9 @@ export async function checkExistingSession(
     if (navigation.navigationError) return stopped("existing-session navigation failed", navigationCategory ?? (navigation.navigationError === "TIMEOUT" ? "navigation-timeout" : "unknown"));
 
     mark("existing-session-response-check", "checking existing-session response");
-    // 401 is a normal logged-out response; 403/429 and other failures stop.
+    // Access restrictions stop automation and let the caller offer manual inspection.
+    if (navigation.status === 403 || navigation.status === 429) return stopped("access denied", "unexpected-status");
+    // 401 is a normal logged-out response; other failures stop.
     if (navigation.status === null || (navigation.status !== 401 && (navigation.status < 200 || navigation.status >= 300))) {
       return stopped("existing-session response unsuccessful", "unexpected-status");
     }

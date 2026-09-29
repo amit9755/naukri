@@ -1,6 +1,7 @@
 import type { Page } from "playwright-core";
 import { inspectSession, navigateToDashboard } from "./local-session.ts";
 
+import { loginFieldCandidates } from "./login-fields.ts";
 import { checkExistingSession } from "./existing-session.ts";
 import type { ExistingSessionStage, DashboardNavigation } from "./existing-session.ts";
 import type { SessionErrorCategory } from "./session-diagnostics.ts";
@@ -16,6 +17,9 @@ export type LoginStatus = {
   profileAccessible: boolean;
   manualVerificationRequired: boolean;
   credentialsConfigured: boolean;
+  usernameCandidateCount?: number;
+  passwordCandidateCount?: number;
+  submitCandidateCount?: number;
   usernameFieldFound: boolean;
   passwordFieldFound: boolean;
   submitButtonFound: boolean;
@@ -48,6 +52,7 @@ export async function runLoginFlow(
   dashboard: DashboardNavigation = navigateToDashboard,
   onDiagnostic: (status: LoginStatus) => void = () => {},
   diagnosticMode = false,
+  diagnosticInspection: (status: LoginStatus) => Promise<void> = async () => {},
 ): Promise<LoginStatus> {
   const diagnostic: LoginStatus = {
     authenticated: false, profileAccessible: false, manualVerificationRequired: false,
@@ -64,6 +69,16 @@ export async function runLoginFlow(
     diagnostic.profileAccessible = authenticated;
     mark(diagnostic.stage, reason);
     return { ...diagnostic };
+  };
+  let diagnosticInspectionStarted = false;
+  const stopDetection = async (reason: string): Promise<LoginStatus> => {
+    const stopped = result(reason);
+    if (diagnosticMode && !signal.aborted && !diagnosticInspectionStarted) {
+      diagnosticInspectionStarted = true;
+      await diagnosticInspection(stopped);
+    }
+    // Inspection is a close-only pause, never a retry or manual-login trigger.
+    return stopped;
   };
   const challenge = (state: Awaited<ReturnType<typeof inspectSession>>) => state.verificationDetected || state.captchaDetected;
   const observe = async (status: number | null) => {
@@ -108,6 +123,10 @@ export async function runLoginFlow(
       diagnostic.manualVerificationRequired = true;
       return await finishManually("verification challenge requires manual completion");
     }
+    if (existing.reason === "access denied") {
+      diagnostic.manualVerificationRequired = true;
+      return await finishManually("access denied; manual inspection required");
+    }
     if (existing.existingSessionAuthenticated !== false) return result(existing.reason);
 
     mark("navigation", "opening official login page");
@@ -116,7 +135,10 @@ export async function runLoginFlow(
     mark("login-page-detection", "checking official login page");
     if (!officialPage(page)) return result("unexpected page origin");
     let state = await observe(response?.status() ?? null);
-    if (state.accessDenied) return result("access denied");
+    if (state.accessDenied) {
+      diagnostic.manualVerificationRequired = true;
+      return await finishManually("access denied; manual inspection required");
+    }
     if (challenge(state)) {
       diagnostic.manualVerificationRequired = true;
       return await finishManually("verification challenge requires manual completion");
@@ -126,33 +148,32 @@ export async function runLoginFlow(
     if (new URL(page.url()).pathname !== "/nlogin/login") return result("expected login page not found");
     if (!credentials) return await finishManually("credentials not configured; manual login required");
 
-    // Visible semantic matches only. Found means exactly one candidate was found.
-    const usernameName = /^(?:Email ID\s*\/\s*Username|Email ID|Username|Enter your active Email ID\s*\/\s*Username)$/i;
-    const passwordName = /^(?:Password|Enter your password)$/i;
+    // Every semantic candidate is considered; no first-match fallback.
     mark("username-field-detection", "checking username field");
-    const username = page.getByLabel(usernameName).or(page.getByPlaceholder(usernameName)).filter({ visible: true });
+    const { username, password, login } = loginFieldCandidates(page);
     const usernameCount = await username.count();
+    diagnostic.usernameCandidateCount = usernameCount;
     diagnostic.usernameFieldFound = usernameCount === 1;
     mark("password-field-detection", "checking password field");
-    const password = page.getByLabel(passwordName).or(page.getByPlaceholder(passwordName)).filter({ visible: true });
     const passwordCount = await password.count();
+    diagnostic.passwordCandidateCount = passwordCount;
     diagnostic.passwordFieldFound = passwordCount === 1;
     mark("submit-button-detection", "checking Login button");
-    const login = page.getByRole("button", { name: /^Login$/i }).filter({ visible: true });
     const submitCount = await login.count();
+    diagnostic.submitCandidateCount = submitCount;
     diagnostic.submitButtonFound = submitCount === 1;
 
     mark("username-field-detection", "checking username field");
-    if (!diagnostic.usernameFieldFound) return result(usernameCount === 0 ? "expected login field not found" : "expected login field is ambiguous");
-    if (!await username.isEditable()) return result("expected login field is not editable");
-    if (!await username.evaluate((element) => element instanceof HTMLInputElement && ["text", "email"].includes(element.type))) return result("unexpected login field type");
+    if (!diagnostic.usernameFieldFound) return await stopDetection(usernameCount === 0 ? "expected login field not found" : "expected login field is ambiguous");
+    if (!await username.isEditable()) return await stopDetection("expected login field is not editable");
+    if (!await username.evaluate((element) => element instanceof HTMLInputElement && ["text", "email"].includes(element.type))) return await stopDetection("unexpected login field type");
     mark("password-field-detection", "checking password field");
-    if (!diagnostic.passwordFieldFound) return result(passwordCount === 0 ? "expected login field not found" : "expected login field is ambiguous");
-    if (!await password.isEditable()) return result("expected login field is not editable");
-    if (!await password.evaluate((element) => element instanceof HTMLInputElement && element.type === "password")) return result("unexpected login field type");
+    if (!diagnostic.passwordFieldFound) return await stopDetection(passwordCount === 0 ? "expected login field not found" : "expected login field is ambiguous");
+    if (!await password.isEditable()) return await stopDetection("expected login field is not editable");
+    if (!await password.evaluate((element) => element instanceof HTMLInputElement && element.type === "password")) return await stopDetection("unexpected login field type");
     mark("submit-button-detection", "checking Login button");
-    if (!diagnostic.submitButtonFound) return result(submitCount === 0 ? "expected Login button not found" : "expected Login button is ambiguous");
-    if (!await login.isEnabled()) return result("Login button is disabled");
+    if (!diagnostic.submitButtonFound) return await stopDetection(submitCount === 0 ? "expected Login button not found" : "expected Login button is ambiguous");
+    if (!await login.isEnabled()) return await stopDetection("Login button is disabled");
 
     // Recheck origin and challenges immediately before every credential interaction.
     const unsafeReason = async (): Promise<string | null> => {
@@ -160,7 +181,10 @@ export async function runLoginFlow(
       if (!officialPage(page) || new URL(page.url()).pathname !== "/nlogin/login") return "login page changed before interaction";
       const current = await inspect(page, null);
       diagnostic.manualVerificationRequired ||= challenge(current);
-      if (current.accessDenied) return "access denied";
+      if (current.accessDenied) {
+        diagnostic.manualVerificationRequired = true;
+        return "access denied; manual inspection required";
+      }
       if (diagnostic.manualVerificationRequired) return "verification challenge requires manual completion";
       if (current.authenticated) return "session changed before interaction";
       return null;
@@ -202,6 +226,11 @@ export async function runLoginFlow(
     }
     return await finishManually("authentication not confirmed after submission", diagnostic.stage);
   } catch {
+    if (["username-field-detection", "password-field-detection", "submit-button-detection"].includes(diagnostic.stage)) {
+      try {
+        return await stopDetection("operation failed at this stage");
+      } catch { /* Closed/cancelled inspection still returns only sanitized status. */ }
+    }
     // A submission may have reached the server even if Playwright reports failure.
     // Keep the window available for inspection, without resubmitting anything.
     if (!manualInspectionStarted && !signal.aborted && ["submit", "post-submit-navigation", "authentication-check"].includes(diagnostic.stage)) {

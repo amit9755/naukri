@@ -45,7 +45,20 @@ async function main() {
     }, undefined, undefined, (diagnostic) => {
       status = diagnostic;
       if (diagnosticMode && diagnostic.stage.startsWith("existing-session-")) console.log(JSON.stringify(diagnostic));
-    }, diagnosticMode);
+    }, diagnosticMode, async (diagnostic) => {
+      console.log(JSON.stringify(diagnostic));
+      const terminal = createInterface({ input: process.stdin, output: process.stdout });
+      try {
+        while (!signal.aborted) {
+          const answer = await terminal.question(
+            "Diagnostic stopped. Inspect the visible page, then type done to close. ", { signal },
+          );
+          if (answer.trim().toLowerCase() === "done") break;
+        }
+      } finally {
+        terminal.close();
+      }
+    });
     flowFinished = true;
   });
   console.log(JSON.stringify(status));

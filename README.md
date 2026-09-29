@@ -96,7 +96,29 @@ boolean. Result diagnostics include `authenticated`, `profileAccessible`,
 `credentialsConfigured`, `usernameFieldFound`, `passwordFieldFound`,
 `submitButtonFound`, `stage`, and `reason`. Field-found flags mean exactly one
 visible candidate was found; false can also mean detection has not been reached.
-Missing and ambiguous controls have distinct fixed reasons. No credential values,
+Missing and ambiguous controls have distinct fixed reasons. Detection combines
+associated labels, placeholders, accessible names, email/password input types,
+and clearly email/username-related name/id attributes. Only visible candidates
+are considered; one input matching multiple cues counts once. Exactly one candidate
+per control is required before any typing. Login buttons must have the accessible
+name `Login` or `Log in`. Diagnostics also include `usernameCandidateCount`,
+`passwordCandidateCount`, and `submitCandidateCount` after each check.
+
+With `NAUKRI_DIAGNOSTIC=true`, failed field detection leaves Chrome open and asks:
+`Diagnostic stopped. Inspect the visible page, then type done to close.`
+This pause only closes the browser afterward; it never resumes automation or
+retries detection. No DOM HTML, field values, or input attributes are printed.
+A detected challenge or access restriction stops automation for manual handling.
+
+For this diagnostic run in Windows **CMD** (not PowerShell):
+
+```cmd
+cd /d C:\work\naukri
+set "NAUKRI_DIAGNOSTIC=true"
+npm run naukri:login
+set "NAUKRI_DIAGNOSTIC="
+```
+ No credential values,
 page text, URLs, raw browser errors, or session material are included.
 
 Stages identify launch/setup, navigation, existing-session checking, login-page

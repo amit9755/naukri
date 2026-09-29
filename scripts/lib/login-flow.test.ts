@@ -14,6 +14,7 @@ function fixture(options: { already?: boolean; ambiguous?: boolean; challengeAft
   const locator = (kind: string) => {
     const value = {
       or: () => value,
+      and: () => value,
       filter: () => value,
       count: async () => options.ambiguous ? 2 : options.missing === kind ? 0 : 1,
       isEditable: async () => true,
@@ -43,7 +44,8 @@ function fixture(options: { already?: boolean; ambiguous?: boolean; challengeAft
     goto: async (target: string) => { url = options.wrongLoginPage ? "https://www.naukri.com/unexpected" : target; return { status: () => 200, ok: () => true }; },
     getByLabel: (label: RegExp) => locator(label.test("Password") ? "password" : "username"),
     getByPlaceholder: () => locator("placeholder"),
-    getByRole: () => locator("button"),
+    getByRole: (role: string, options: { name: RegExp }) => locator(role === "button" ? "button" : options.name.test("Password") ? "password" : "username"),
+    locator: (selector: string) => locator(selector.includes("password") ? "password" : "username"),
   } as unknown as Page;
   const inspect = async () => {
     if (options.detectionFails) throw new Error("secret-token");
@@ -85,7 +87,7 @@ test("ambiguous selectors and denied access never fill or submit", async () => {
   for (const options of [{ ambiguous: true }, { denied: true }]) {
     const f = fixture(options);
     assert.equal((await f.run()).authenticated, false);
-    assert.deepEqual(f.actions, []);
+    assert.deepEqual(f.actions, "denied" in options ? ["manual"] : []);
     assert.equal(f.clicks(), 0);
   }
 });
@@ -284,4 +286,41 @@ test("profile redirect establishes unauthenticated state before continuing to lo
   assert.equal(progression[redirect].existingSessionAuthenticated, false);
   assert.equal(status.authenticated, true);
   assert.equal(f.clicks(), 1);
+});
+
+
+test("diagnostic field failure keeps the flow open until inspection completes, without retry", async () => {
+  const f = fixture({ missing: "username" });
+  let closeInspection: (() => void) | undefined;
+  let finished = false;
+  const pending = runLoginFlow(f.page, new AbortController().signal, credentials, f.manual, f.inspect, f.dashboard,
+    undefined, true, async (diagnostic) => {
+      assert.equal(diagnostic.stage, "username-field-detection");
+      assert.equal(diagnostic.usernameCandidateCount, 0);
+      assert.equal(diagnostic.passwordCandidateCount, 1);
+      assert.equal(diagnostic.submitCandidateCount, 1);
+      await new Promise<void>((resolve) => { closeInspection = resolve; });
+    }).then((status) => { finished = true; return status; });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(finished, false);
+  assert.ok(closeInspection);
+  assert.deepEqual(f.actions, []);
+  assert.equal(f.clicks(), 0);
+  closeInspection();
+  const result = await pending;
+  assert.equal(result.authenticated, false);
+  assert.equal(result.reason, "expected login field not found");
+  assert.deepEqual(f.actions, []);
+  assert.equal(f.clicks(), 0);
+});
+
+test("non-diagnostic field failure does not request an inspection pause", async () => {
+  const f = fixture({ missing: "password" });
+  let paused = false;
+  const result = await runLoginFlow(f.page, new AbortController().signal, credentials, f.manual, f.inspect, f.dashboard,
+    undefined, false, async () => { paused = true; });
+  assert.equal(paused, false);
+  assert.equal(result.passwordCandidateCount, 0);
+  assert.equal(result.authenticated, false);
+  assert.deepEqual(f.actions, []);
 });
