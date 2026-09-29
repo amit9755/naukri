@@ -94,3 +94,13 @@ test("submit accessible names accept Login and Log in, exclude other actions", a
   ])).submit, 0);
   assert.equal((await counts([login, { ...login }])).submit, 2);
 });
+
+
+test("exact visible Naukri controls match when username uses type=text", async () => {
+  assert.deepEqual(await counts([
+    { tag: "input", type: "text", label: "Email ID / Username", placeholder: "Enter Email ID / Username" },
+    { tag: "input", type: "password", label: "Password", placeholder: "Enter Password" },
+    { tag: "button", accessibleName: "Login" },
+  ]), { username: 1, password: 1, submit: 1 });
+  assert.equal((await counts([{ tag: "input", type: "text", placeholder: "Enter Email ID / Username" }])).username, 1);
+});

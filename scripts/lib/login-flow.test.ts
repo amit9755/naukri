@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { Page } from "playwright-core";
+import type { Frame, Page } from "playwright-core";
 import { credentialsFromEnvironment, runLoginFlow } from "./login-flow.ts";
 
 const credentials = { username: "fixture-user", password: "fixture-password" };
@@ -15,6 +15,8 @@ function fixture(options: { already?: boolean; ambiguous?: boolean; challengeAft
     const value = {
       or: () => value,
       and: () => value,
+      first: () => value,
+      waitFor: async () => { if (options.missing === kind) { const error = new Error(); error.name = "TimeoutError"; throw error; } },
       filter: () => value,
       count: async () => options.ambiguous ? 2 : options.missing === kind ? 0 : 1,
       isEditable: async () => true,
@@ -40,11 +42,16 @@ function fixture(options: { already?: boolean; ambiguous?: boolean; challengeAft
   const page = {
     url: () => url,
     isClosed: () => false,
+    isDetached: () => false,
+    mainFrame: () => page,
+    frames: () => [page],
+    waitForLoadState: async () => {},
+    bringToFront: async () => {},
     context: () => ({ browser: () => ({ isConnected: () => true }) }),
     goto: async (target: string) => { url = options.wrongLoginPage ? "https://www.naukri.com/unexpected" : target; return { status: () => 200, ok: () => true }; },
     getByLabel: (label: RegExp) => locator(label.test("Password") ? "password" : "username"),
     getByPlaceholder: () => locator("placeholder"),
-    getByRole: (role: string, options: { name: RegExp }) => locator(role === "button" ? "button" : options.name.test("Password") ? "password" : "username"),
+    getByRole: (role: string, options?: { name: RegExp }) => locator(role === "button" ? "button" : options?.name.test("Password") ? "password" : "username"),
     locator: (selector: string) => locator(selector.includes("password") ? "password" : "username"),
   } as unknown as Page;
   const inspect = async () => {
@@ -323,4 +330,23 @@ test("non-diagnostic field failure does not request an inspection pause", async 
   assert.equal(result.passwordCandidateCount, 0);
   assert.equal(result.authenticated, false);
   assert.deepEqual(f.actions, []);
+});
+
+
+test("ambiguous main and child forms stop before filling any credentials", async () => {
+  const f = fixture();
+  const main = f.page.mainFrame();
+  const child = {
+    ...f.page,
+    parentFrame: () => main,
+    frameElement: async () => ({ isVisible: async () => true, dispose: async () => {} }),
+  } as unknown as Frame;
+  f.page.frames = () => [main, child];
+  const status = await f.run();
+  assert.equal(status.reason, "multiple possible login frames found");
+  assert.equal(status.detectionFrame, "none");
+  assert.equal(status.loginFormVisible, false);
+  assert.equal(status.frameCount, 2);
+  assert.deepEqual(f.actions, []);
+  assert.equal(f.clicks(), 0);
 });

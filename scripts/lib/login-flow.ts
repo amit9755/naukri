@@ -1,7 +1,8 @@
 import type { Page } from "playwright-core";
 import { inspectSession, navigateToDashboard } from "./local-session.ts";
 
-import { loginFieldCandidates } from "./login-fields.ts";
+import { discoverLoginForm, trustedLoginFrame } from "./login-discovery.ts";
+import type { LoginStructure } from "./login-discovery.ts";
 import { checkExistingSession } from "./existing-session.ts";
 import type { ExistingSessionStage, DashboardNavigation } from "./existing-session.ts";
 import type { SessionErrorCategory } from "./session-diagnostics.ts";
@@ -10,7 +11,7 @@ export type LoginCredentials = { username: string; password: string };
 export type LoginStage = "launch" | "navigation" | ExistingSessionStage | "login-page-detection" |
   "username-field-detection" | "password-field-detection" | "credential-fill" |
   "submit-button-detection" | "submit" | "post-submit-navigation" | "authentication-check" | "manual-verification";
-export type LoginStatus = {
+export type LoginStatus = Partial<LoginStructure> & {
   existingSessionAuthenticated?: boolean;
   errorCategory?: SessionErrorCategory;
   authenticated: boolean;
@@ -148,20 +149,23 @@ export async function runLoginFlow(
     if (new URL(page.url()).pathname !== "/nlogin/login") return result("expected login page not found");
     if (!credentials) return await finishManually("credentials not configured; manual login required");
 
-    // Every semantic candidate is considered; no first-match fallback.
-    mark("username-field-detection", "checking username field");
-    const { username, password, login } = loginFieldCandidates(page);
-    const usernameCount = await username.count();
-    diagnostic.usernameCandidateCount = usernameCount;
+    // This is the same Page navigated above, not an inferred active tab.
+    await page.bringToFront();
+    mark("username-field-detection", "waiting for login document and discovering frames");
+    const discovery = await discoverLoginForm(page);
+    Object.assign(diagnostic, discovery.diagnostics);
+    const { username, password, login } = discovery.fields;
+    const { usernameCandidateCount: usernameCount, passwordCandidateCount: passwordCount, submitCandidateCount: submitCount } = discovery.diagnostics;
     diagnostic.usernameFieldFound = usernameCount === 1;
-    mark("password-field-detection", "checking password field");
-    const passwordCount = await password.count();
-    diagnostic.passwordCandidateCount = passwordCount;
     diagnostic.passwordFieldFound = passwordCount === 1;
-    mark("submit-button-detection", "checking Login button");
-    const submitCount = await login.count();
-    diagnostic.submitCandidateCount = submitCount;
     diagnostic.submitButtonFound = submitCount === 1;
+    // Readiness may reveal a challenge after the initial page inspection.
+    const readyState = await inspect(page, null);
+    if (challenge(readyState) || readyState.accessDenied) {
+      diagnostic.manualVerificationRequired = true;
+      return await finishManually("verification or access restriction requires manual completion");
+    }
+    if (discovery.ambiguousFrames) return await stopDetection("multiple possible login frames found");
 
     mark("username-field-detection", "checking username field");
     if (!diagnostic.usernameFieldFound) return await stopDetection(usernameCount === 0 ? "expected login field not found" : "expected login field is ambiguous");
@@ -175,10 +179,19 @@ export async function runLoginFlow(
     if (!diagnostic.submitButtonFound) return await stopDetection(submitCount === 0 ? "expected Login button not found" : "expected Login button is ambiguous");
     if (!await login.isEnabled()) return await stopDetection("Login button is disabled");
 
+    if (!discovery.frame) return await stopDetection("coherent login form not found");
+    const detectionFrame = discovery.frame;
+
     // Recheck origin and challenges immediately before every credential interaction.
     const unsafeReason = async (): Promise<string | null> => {
       if (signal.aborted) return "operation cancelled";
       if (!officialPage(page) || new URL(page.url()).pathname !== "/nlogin/login") return "login page changed before interaction";
+      if (!trustedLoginFrame(detectionFrame, page)) return "login frame changed before interaction";
+      if (detectionFrame !== page.mainFrame()) {
+        const childState = await inspectSession(detectionFrame, null);
+        diagnostic.manualVerificationRequired ||= challenge(childState) || childState.accessDenied;
+        if (diagnostic.manualVerificationRequired) return "verification challenge requires manual completion";
+      }
       const current = await inspect(page, null);
       diagnostic.manualVerificationRequired ||= challenge(current);
       if (current.accessDenied) {

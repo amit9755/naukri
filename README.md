@@ -104,6 +104,25 @@ per control is required before any typing. Login buttons must have the accessibl
 name `Login` or `Log in`. Diagnostics also include `usernameCandidateCount`,
 `passwordCandidateCount`, and `submitCandidateCount` after each check.
 
+Discovery uses the same Playwright Page passed to login navigation and brings that
+tab to the foreground. It waits for DOMContentLoaded and visible semantic controls
+within a shared five-second readiness budget; it does not retry navigation or
+submission. The supplied Naukri labels/placeholders already match the semantic
+selectors, including a username input of type `text`.
+
+Discovery checks the main frame first, then visible child frames on the exact same
+HTTPS origin. Third-party frames are counted but their contents are never searched.
+Exactly one coherent form is required across eligible frames, with one candidate
+per control. Multiple possible login frames stop without filling anything. The
+selected frame's origin and verification state are checked before each interaction.
+
+Sanitized structural fields are `frameCount`, `detectionFrame` (`main`, `child`,
+`none`), `loginFormVisible`, `visibleInputCount`, `visibleButtonCount`, and
+`readinessTimedOut`. Counts describe the selected frame, or the main frame when
+none was selected. A readiness timeout can still be followed by discovery of an
+already-rendered child form. These fields distinguish document-readiness and frame
+scope problems without printing frame URLs, HTML, or control values.
+
 With `NAUKRI_DIAGNOSTIC=true`, failed field detection leaves Chrome open and asks:
 `Diagnostic stopped. Inspect the visible page, then type done to close.`
 This pause only closes the browser afterward; it never resumes automation or

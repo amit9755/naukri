@@ -1,4 +1,4 @@
-import type { Page } from "playwright-core";
+import type { Frame, Page } from "playwright-core";
 
 // Semantic cues are combined, not tried as ordered fallbacks: separate matches
 // remain ambiguous. Locator unions deduplicate a single input matching many cues.
@@ -10,7 +10,7 @@ const usernameIdentifiers = [
   "loginusername", "login-username", "login_username",
 ];
 
-export function loginFieldCandidates(page: Page) {
+export function loginFieldCandidates(page: Page | Frame) {
   const textInputs = page.locator('input:not([type]), input[type="text" i], input[type="email" i]');
   const namedInputs = page.locator(usernameIdentifiers.flatMap((name) =>
     [`input[name="${name}" i]`, `input[id="${name}" i]`]).join(", "));

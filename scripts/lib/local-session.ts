@@ -1,7 +1,7 @@
 import { chmod, lstat, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
-import type { BrowserContext, Page } from "playwright-core";
+import type { BrowserContext, Frame, Page } from "playwright-core";
 
 import { assertOutsideRepository, LocalChromeError, localChromeLaunchOptions, localChromePaths, resolveChromeExecutable } from "./local-chrome.ts";
 
@@ -80,7 +80,7 @@ export async function navigateToDashboard(page: Page, onError?: (category: Sessi
 
 // Passive heuristics only. No account fields, cookies, input values, or page text
 // leave the browser; unknown pages must not be treated as authenticated.
-export async function inspectSession(page: Page, status: number | null) {
+export async function inspectSession(page: Page | Frame, status: number | null) {
   const signals = await page.evaluate(() => {
     const visible = (element: Element) => {
       const style = getComputedStyle(element);
