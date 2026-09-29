@@ -2,7 +2,20 @@ import type { Page } from "playwright-core";
 import { inspectSession, navigateToDashboard } from "./local-session.ts";
 
 export type LoginCredentials = { username: string; password: string };
-export type LoginStatus = { authenticated: boolean; profileAccessible: boolean; manualVerificationRequired: boolean };
+export type LoginStage = "launch" | "navigation" | "existing-session-check" | "login-page-detection" |
+  "username-field-detection" | "password-field-detection" | "credential-fill" |
+  "submit-button-detection" | "submit" | "post-submit-navigation" | "authentication-check" | "manual-verification";
+export type LoginStatus = {
+  authenticated: boolean;
+  profileAccessible: boolean;
+  manualVerificationRequired: boolean;
+  credentialsConfigured: boolean;
+  usernameFieldFound: boolean;
+  passwordFieldFound: boolean;
+  submitButtonFound: boolean;
+  stage: LoginStage;
+  reason: string;
+};
 const loginUrl = "https://www.naukri.com/nlogin/login";
 
 export function credentialsFromEnvironment(env: Record<string, string | undefined>): LoginCredentials | undefined {
@@ -18,17 +31,34 @@ function officialPage(page: Page) {
   return url.protocol === "https:" && url.hostname === "www.naukri.com";
 }
 
-// Dependencies permit unit tests with fake pages; tests never launch a browser.
+// All diagnostic text is fixed here. Never forward errors, URLs, DOM text or values.
+// Dependencies permit tests with fake pages; tests never launch a browser.
 export async function runLoginFlow(
   page: Page,
   signal: AbortSignal,
   credentials: LoginCredentials | undefined,
-  manualCompletion: (verificationRequired: boolean) => Promise<boolean>,
+  manualCompletion: (verificationRequired: boolean, diagnostic: LoginStatus) => Promise<boolean>,
   inspect = inspectSession,
   dashboard: (page: Page) => Promise<{ status: number | null; navigationError: string | null }> = navigateToDashboard,
+  onDiagnostic: (status: LoginStatus) => void = () => {},
 ): Promise<LoginStatus> {
-  let manualVerificationRequired = false;
-  const result = (authenticated = false): LoginStatus => ({ authenticated, profileAccessible: authenticated, manualVerificationRequired });
+  const diagnostic: LoginStatus = {
+    authenticated: false, profileAccessible: false, manualVerificationRequired: false,
+    credentialsConfigured: !!credentials, usernameFieldFound: false, passwordFieldFound: false,
+    submitButtonFound: false, stage: "navigation", reason: "opening authenticated page",
+  };
+  const mark = (stage: LoginStage, reason: string) => {
+    diagnostic.stage = stage;
+    diagnostic.reason = reason;
+    onDiagnostic({ ...diagnostic });
+  };
+  const result = (reason: string, authenticated = false): LoginStatus => {
+    diagnostic.authenticated = authenticated;
+    diagnostic.profileAccessible = authenticated;
+    mark(diagnostic.stage, reason);
+    return { ...diagnostic };
+  };
+  const challenge = (state: Awaited<ReturnType<typeof inspectSession>>) => state.verificationDetected || state.captchaDetected;
   const observe = async (status: number | null) => {
     let state = await inspect(page, status);
     for (let i = 0; i < 6 && state.outcome === "UNKNOWN" && !signal.aborted; i++) {
@@ -37,86 +67,148 @@ export async function runLoginFlow(
     }
     return state;
   };
-  const challenge = (state: Awaited<ReturnType<typeof inspectSession>>) => state.verificationDetected || state.captchaDetected;
-  const finishManually = async (): Promise<LoginStatus> => {
-    if (signal.aborted || !await manualCompletion(manualVerificationRequired)) return result();
-    // Inspect before navigating so an unfinished challenge is left untouched.
+  let manualInspectionStarted = false;
+  const finishManually = async (reason: string, stage: LoginStage = "manual-verification"): Promise<LoginStatus> => {
+    if (signal.aborted) return result("operation cancelled");
+    manualInspectionStarted = true;
+    mark(stage, reason);
+    // No timeout: keep Chrome open until the user confirms, cancels or closes it.
+    if (!await manualCompletion(diagnostic.manualVerificationRequired, { ...diagnostic })) return result(`${reason}; manual inspection cancelled`);
+    if (signal.aborted) return result("operation cancelled");
     const current = await inspect(page, null);
-    if (signal.aborted || current.accessDenied || challenge(current)) return result();
+    diagnostic.manualVerificationRequired ||= challenge(current);
+    if (!officialPage(page)) return result("unexpected page origin");
+    if (current.accessDenied) return result("access denied");
+    if (challenge(current)) return result("manual verification incomplete");
+    mark("authentication-check", "verifying authenticated page after manual completion");
     const navigation = await dashboard(page);
-    if (navigation.navigationError || signal.aborted) return result();
+    if (navigation.navigationError) return result("authenticated page navigation failed");
+    if (signal.aborted) return result("operation cancelled");
     const state = await observe(navigation.status);
-    manualVerificationRequired ||= challenge(state);
-    return result(officialPage(page) && !!navigation.status && navigation.status >= 200 && navigation.status < 300 && state.authenticated && !signal.aborted);
+    diagnostic.manualVerificationRequired ||= challenge(state);
+    const authenticated = officialPage(page) && !!navigation.status && navigation.status >= 200 && navigation.status < 300 && state.authenticated && !signal.aborted;
+    return result(authenticated ? "authentication confirmed" : "authentication not confirmed", authenticated);
   };
 
-  const initialNavigation = await dashboard(page);
-  if (initialNavigation.navigationError || signal.aborted) return result();
-  let state = await observe(initialNavigation.status);
-  if (signal.aborted || !officialPage(page) || state.accessDenied) return result();
-  if (state.authenticated && initialNavigation.status !== null && initialNavigation.status >= 200 && initialNavigation.status < 300) return result(true);
-  if (challenge(state)) {
-    manualVerificationRequired = true;
-    return finishManually();
-  }
-
-  const response = await page.goto(loginUrl, { waitUntil: "domcontentloaded", timeout: 25_000 });
-  if (signal.aborted || !officialPage(page)) return result();
-  state = await observe(response?.status() ?? null);
-  if (state.accessDenied) return result();
-  if (challenge(state)) {
-    manualVerificationRequired = true;
-    return finishManually();
-  }
-  if (!response?.ok()) return result();
-  if (state.authenticated) return result(true);
-  if (!credentials) return finishManually();
-
-  // Match visible semantic labels/placeholders only, never positional selectors.
-  // Input candidates must be unique and editable; the Login button must be unique.
-  const usernameName = /^(?:Email ID\s*\/\s*Username|Email ID|Username|Enter your active Email ID\s*\/\s*Username)$/i;
-  const passwordName = /^(?:Password|Enter your password)$/i;
-  const username = page.getByLabel(usernameName).or(page.getByPlaceholder(usernameName)).filter({ visible: true });
-  const password = page.getByLabel(passwordName).or(page.getByPlaceholder(passwordName)).filter({ visible: true });
-  const login = page.getByRole("button", { name: /^Login$/i }).filter({ visible: true });
-  if (await username.count() !== 1 || await password.count() !== 1 || await login.count() !== 1) return result();
-  if (!await username.isEditable() || !await password.isEditable() || !await login.isEnabled()) return result();
-  if (!await username.evaluate((element) => element instanceof HTMLInputElement && ["text", "email"].includes(element.type)) ||
-      !await password.evaluate((element) => element instanceof HTMLInputElement && element.type === "password")) return result();
-
-  // Recheck origin and challenges immediately before every credential interaction.
-  const safe = async () => {
-    if (signal.aborted || !officialPage(page) || new URL(page.url()).pathname !== "/nlogin/login") return false;
-    const current = await inspect(page, null);
-    manualVerificationRequired ||= challenge(current);
-    return !current.authenticated && !current.accessDenied && !manualVerificationRequired;
-  };
-  if (!await safe()) return manualVerificationRequired ? finishManually() : result();
-  await username.fill(credentials.username, { timeout: 3_000 });
-  if (!await safe()) return manualVerificationRequired ? finishManually() : result();
-  await password.fill(credentials.password, { timeout: 3_000 });
-  if (!await safe()) return manualVerificationRequired ? finishManually() : result();
-  // Exactly one submission. Never retry, including when a click times out.
-  await login.click({ timeout: 3_000 });
-  // Observe only after submission; no repeat login request or automatic reload.
-  for (let i = 0; i < 10 && !signal.aborted; i++) {
-    state = await inspect(page, null);
-    if (signal.aborted || !officialPage(page) || state.accessDenied) return result();
+  try {
+    mark("navigation", "opening authenticated page");
+    const initialNavigation = await dashboard(page);
+    if (initialNavigation.navigationError) return result("authenticated page navigation failed");
+    if (signal.aborted) return result("operation cancelled");
+    mark("existing-session-check", "checking existing session");
+    let state = await observe(initialNavigation.status);
+    if (signal.aborted) return result("operation cancelled");
+    if (!officialPage(page)) return result("unexpected page origin");
+    if (state.accessDenied) return result("access denied");
+    if (state.authenticated && initialNavigation.status !== null && initialNavigation.status >= 200 && initialNavigation.status < 300) return result("existing session authenticated", true);
     if (challenge(state)) {
-      manualVerificationRequired = true;
-      return finishManually();
+      diagnostic.manualVerificationRequired = true;
+      return await finishManually("verification challenge requires manual completion");
     }
-    if (state.authenticated) {
-      const navigation = await dashboard(page);
-      if (navigation.navigationError || signal.aborted) return result();
-      state = await observe(navigation.status);
+
+    mark("navigation", "opening official login page");
+    const response = await page.goto(loginUrl, { waitUntil: "domcontentloaded", timeout: 25_000 });
+    if (signal.aborted) return result("operation cancelled");
+    mark("login-page-detection", "checking official login page");
+    if (!officialPage(page)) return result("unexpected page origin");
+    state = await observe(response?.status() ?? null);
+    if (state.accessDenied) return result("access denied");
+    if (challenge(state)) {
+      diagnostic.manualVerificationRequired = true;
+      return await finishManually("verification challenge requires manual completion");
+    }
+    if (!response?.ok()) return result("login page response unsuccessful");
+    if (state.authenticated) return result("existing session authenticated", true);
+    if (new URL(page.url()).pathname !== "/nlogin/login") return result("expected login page not found");
+    if (!credentials) return await finishManually("credentials not configured; manual login required");
+
+    // Visible semantic matches only. Found means exactly one candidate was found.
+    const usernameName = /^(?:Email ID\s*\/\s*Username|Email ID|Username|Enter your active Email ID\s*\/\s*Username)$/i;
+    const passwordName = /^(?:Password|Enter your password)$/i;
+    mark("username-field-detection", "checking username field");
+    const username = page.getByLabel(usernameName).or(page.getByPlaceholder(usernameName)).filter({ visible: true });
+    const usernameCount = await username.count();
+    diagnostic.usernameFieldFound = usernameCount === 1;
+    mark("password-field-detection", "checking password field");
+    const password = page.getByLabel(passwordName).or(page.getByPlaceholder(passwordName)).filter({ visible: true });
+    const passwordCount = await password.count();
+    diagnostic.passwordFieldFound = passwordCount === 1;
+    mark("submit-button-detection", "checking Login button");
+    const login = page.getByRole("button", { name: /^Login$/i }).filter({ visible: true });
+    const submitCount = await login.count();
+    diagnostic.submitButtonFound = submitCount === 1;
+
+    mark("username-field-detection", "checking username field");
+    if (!diagnostic.usernameFieldFound) return result(usernameCount === 0 ? "expected login field not found" : "expected login field is ambiguous");
+    if (!await username.isEditable()) return result("expected login field is not editable");
+    if (!await username.evaluate((element) => element instanceof HTMLInputElement && ["text", "email"].includes(element.type))) return result("unexpected login field type");
+    mark("password-field-detection", "checking password field");
+    if (!diagnostic.passwordFieldFound) return result(passwordCount === 0 ? "expected login field not found" : "expected login field is ambiguous");
+    if (!await password.isEditable()) return result("expected login field is not editable");
+    if (!await password.evaluate((element) => element instanceof HTMLInputElement && element.type === "password")) return result("unexpected login field type");
+    mark("submit-button-detection", "checking Login button");
+    if (!diagnostic.submitButtonFound) return result(submitCount === 0 ? "expected Login button not found" : "expected Login button is ambiguous");
+    if (!await login.isEnabled()) return result("Login button is disabled");
+
+    // Recheck origin and challenges immediately before every credential interaction.
+    const unsafeReason = async (): Promise<string | null> => {
+      if (signal.aborted) return "operation cancelled";
+      if (!officialPage(page) || new URL(page.url()).pathname !== "/nlogin/login") return "login page changed before interaction";
+      const current = await inspect(page, null);
+      diagnostic.manualVerificationRequired ||= challenge(current);
+      if (current.accessDenied) return "access denied";
+      if (diagnostic.manualVerificationRequired) return "verification challenge requires manual completion";
+      if (current.authenticated) return "session changed before interaction";
+      return null;
+    };
+    const stopUnsafe = async (reason: string) => diagnostic.manualVerificationRequired ? await finishManually(reason) : result(reason);
+    mark("credential-fill", "filling username field");
+    let unsafe = await unsafeReason();
+    if (unsafe) return await stopUnsafe(unsafe);
+    await username.fill(credentials.username, { timeout: 3_000 });
+    mark("credential-fill", "filling password field");
+    unsafe = await unsafeReason();
+    if (unsafe) return await stopUnsafe(unsafe);
+    await password.fill(credentials.password, { timeout: 3_000 });
+    mark("submit", "submitting login once");
+    unsafe = await unsafeReason();
+    if (unsafe) return await stopUnsafe(unsafe);
+    // Exactly one submission. Never retry, including when a click times out.
+    await login.click({ timeout: 3_000 });
+    mark("post-submit-navigation", "observing login response");
+    for (let i = 0; i < 10 && !signal.aborted; i++) {
+      state = await inspect(page, null);
+      if (!officialPage(page) || state.accessDenied) return await finishManually("login response requires manual inspection", "post-submit-navigation");
       if (challenge(state)) {
-        manualVerificationRequired = true;
-        return finishManually();
+        diagnostic.manualVerificationRequired = true;
+        return await finishManually("verification challenge requires manual completion");
       }
-      return result(officialPage(page) && !!navigation.status && navigation.status >= 200 && navigation.status < 300 && state.authenticated && !signal.aborted);
+      if (state.authenticated) {
+        mark("authentication-check", "verifying authenticated page");
+        const navigation = await dashboard(page);
+        if (signal.aborted) return result("operation cancelled");
+        if (navigation.navigationError) return await finishManually("authenticated page navigation failed after submission", "authentication-check");
+        state = await observe(navigation.status);
+        diagnostic.manualVerificationRequired ||= challenge(state);
+        const authenticated = officialPage(page) && !!navigation.status && navigation.status >= 200 && navigation.status < 300 && state.authenticated && !signal.aborted;
+        if (authenticated) return result("authentication confirmed", true);
+        return await finishManually("authentication not confirmed after submission", diagnostic.stage);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
     }
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    return await finishManually("authentication not confirmed after submission", diagnostic.stage);
+  } catch {
+    // A submission may have reached the server even if Playwright reports failure.
+    // Keep the window available for inspection, without resubmitting anything.
+    if (!manualInspectionStarted && !signal.aborted && ["submit", "post-submit-navigation", "authentication-check"].includes(diagnostic.stage)) {
+      const failedStage = diagnostic.stage;
+      try {
+        return await finishManually("operation failed at this stage; manual inspection required", failedStage);
+      } catch {
+        diagnostic.stage = failedStage;
+      }
+    }
+    // Raw fill/navigation errors may contain secrets. Only fixed diagnostics escape.
+    return result(signal.aborted ? "operation cancelled" : "operation failed at this stage");
   }
-  return result();
 }

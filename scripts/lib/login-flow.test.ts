@@ -4,27 +4,29 @@ import type { Page } from "playwright-core";
 import { credentialsFromEnvironment, runLoginFlow } from "./login-flow.ts";
 
 const credentials = { username: "fixture-user", password: "fixture-password" };
-function fixture(options: { already?: boolean; ambiguous?: boolean; challengeAfterFill?: boolean; challengeAfterClick?: boolean; clickFails?: boolean; denied?: boolean; initialChallenge?: boolean; failedLogin?: boolean } = {}) {
+function fixture(options: { already?: boolean; ambiguous?: boolean; challengeAfterFill?: boolean; challengeAfterClick?: boolean; clickFails?: boolean; denied?: boolean; initialChallenge?: boolean; failedLogin?: boolean; missing?: string; fillFails?: boolean; manualCancel?: boolean; navigationFails?: boolean; detectionFails?: boolean; wrongLoginPage?: boolean; verificationNavigationFails?: boolean } = {}) {
   let url = "https://www.naukri.com/mnjuser/homepage";
   let authenticated = !!options.already;
   let challenged = !!options.initialChallenge;
   const actions: string[] = [];
   let clicks = 0;
+  const manualDiagnostics: import("./login-flow.ts").LoginStatus[] = [];
   const locator = (kind: string) => {
     const value = {
       or: () => value,
       filter: () => value,
-      count: async () => options.ambiguous ? 2 : 1,
+      count: async () => options.ambiguous ? 2 : options.missing === kind ? 0 : 1,
       isEditable: async () => true,
       isEnabled: async () => true,
       evaluate: async () => true,
       fill: async () => {
         actions.push(kind);
+        if (options.fillFails) throw new Error("fixture-password fixture-user secret-token");
         if (options.challengeAfterFill) challenged = true;
       },
       click: async () => {
         clicks++;
-        if (options.clickFails) throw new Error("synthetic click failure");
+        if (options.clickFails) throw new Error("fixture-password fixture-user secret-token");
         if (options.challengeAfterClick) challenged = true;
         else if (!options.failedLogin) {
           authenticated = true;
@@ -36,21 +38,24 @@ function fixture(options: { already?: boolean; ambiguous?: boolean; challengeAft
   };
   const page = {
     url: () => url,
-    goto: async (target: string) => { url = target; return { status: () => 200, ok: () => true }; },
+    goto: async (target: string) => { url = options.wrongLoginPage ? "https://www.naukri.com/unexpected" : target; return { status: () => 200, ok: () => true }; },
     getByLabel: (label: RegExp) => locator(label.test("Password") ? "password" : "username"),
     getByPlaceholder: () => locator("placeholder"),
     getByRole: () => locator("button"),
   } as unknown as Page;
-  const inspect = async () => ({
+  const inspect = async () => {
+    if (options.detectionFails) throw new Error("secret-token");
+    return ({
     authenticated, profileAccessible: authenticated, accessDenied: !!options.denied,
     captchaDetected: challenged, verificationDetected: challenged, loginRequired: !authenticated,
     evidence: { accountRoute: authenticated, signOutVisible: authenticated },
     outcome: challenged ? "BLOCKED" : authenticated ? "AUTHENTICATED" : "AUTH_REQUIRED",
-  });
-  const dashboard = async () => ({ status: 200, navigationError: null });
-  const manual = async () => { actions.push("manual"); challenged = false; authenticated = true; url = "https://www.naukri.com/mnjuser/homepage"; return true; };
+  }); };
+  let dashboardVisits = 0;
+  const dashboard = async () => { dashboardVisits++; return { status: 200, navigationError: options.navigationFails || (options.verificationNavigationFails && dashboardVisits > 1) ? "TIMEOUT" : null }; };
+  const manual = async (_verification?: boolean, diagnostic?: import("./login-flow.ts").LoginStatus) => { actions.push("manual"); if (diagnostic) manualDiagnostics.push(diagnostic); if (options.manualCancel) return false; challenged = false; authenticated = true; url = "https://www.naukri.com/mnjuser/homepage"; return true; };
   const run = (input = credentials) => runLoginFlow(page, new AbortController().signal, input, manual, inspect, dashboard);
-  return { run, page, inspect, dashboard, manual, actions, clicks: () => clicks };
+  return { run, page, inspect, dashboard, manual, actions, manualDiagnostics, clicks: () => clicks };
 }
 
 test("credentials are optional but incomplete configuration fails closed", () => {
@@ -69,7 +74,7 @@ test("authenticated session skips credential filling and Login", async () => {
 
 test("unique login controls are filled once and submitted once", async () => {
   const f = fixture();
-  assert.deepEqual(await f.run(), { authenticated: true, profileAccessible: true, manualVerificationRequired: false });
+  assert.equal((await f.run()).authenticated, true);
   assert.deepEqual(f.actions, ["username", "password"]);
   assert.equal(f.clicks(), 1);
 });
@@ -92,14 +97,19 @@ test("challenge appearing after first fill stops automated interaction", async (
 
 test("challenge after Login hands off manually without resubmission", async () => {
   const f = fixture({ challengeAfterClick: true });
-  assert.deepEqual(await f.run(), { authenticated: true, profileAccessible: true, manualVerificationRequired: true });
+  const status = await f.run();
+  assert.equal(status.authenticated, true);
+  assert.equal(status.manualVerificationRequired, true);
   assert.deepEqual(f.actions, ["username", "password", "manual"]);
   assert.equal(f.clicks(), 1);
 });
 
 test("uncertain click result never triggers another Login click", async () => {
-  const f = fixture({ clickFails: true });
-  await assert.rejects(f.run());
+  const f = fixture({ clickFails: true, manualCancel: true });
+  const status = await f.run();
+  assert.equal(status.stage, "submit");
+  assert.equal(status.authenticated, false);
+  assert.doesNotMatch(JSON.stringify(status), /fixture-password|fixture-user|secret-token/);
   assert.equal(f.clicks(), 1);
 });
 
@@ -122,14 +132,115 @@ test("initial challenge leaves credential fields untouched", async () => {
 
 test("failed login returns false without a second submission", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  const f = fixture({ failedLogin: true });
+  const f = fixture({ failedLogin: true, manualCancel: true });
   const pending = f.run();
   // Flush only fake observation timers; no browser or network activity.
   for (let i = 0; i < 30; i++) {
     await new Promise<void>((resolve) => setImmediate(resolve));
     t.mock.timers.tick(500);
   }
-  assert.equal((await pending).authenticated, false);
+  const status = await pending;
+  assert.equal(status.authenticated, false);
+  assert.equal(status.stage, "post-submit-navigation");
+  assert.match(status.reason, /authentication not confirmed/);
   assert.equal(f.clicks(), 1);
-  assert.deepEqual(f.actions, ["username", "password"]);
+  assert.deepEqual(f.actions, ["username", "password", "manual"]);
+});
+
+
+test("missing controls report exact stages and only element-found booleans", async () => {
+  for (const [missing, stage] of [
+    ["username", "username-field-detection"],
+    ["password", "password-field-detection"],
+    ["button", "submit-button-detection"],
+  ]) {
+    const f = fixture({ missing });
+    const status = await f.run();
+    assert.equal(status.stage, stage);
+    assert.equal(status.credentialsConfigured, true);
+    assert.equal(status.usernameFieldFound, missing !== "username");
+    assert.equal(status.passwordFieldFound, missing !== "password");
+    assert.equal(status.submitButtonFound, missing !== "button");
+    assert.match(status.reason, /not found/);
+    assert.equal(status.authenticated, false);
+    assert.deepEqual(f.actions, []);
+    assert.equal(f.clicks(), 0);
+  }
+});
+
+test("ambiguity is distinguished from a missing field", async () => {
+  const status = await fixture({ ambiguous: true }).run();
+  assert.equal(status.stage, "username-field-detection");
+  assert.equal(status.reason, "expected login field is ambiguous");
+});
+
+test("fill errors preserve stage and never expose raw errors", async () => {
+  const f = fixture({ fillFails: true });
+  const status = await f.run();
+  assert.equal(status.stage, "credential-fill");
+  assert.equal(status.reason, "operation failed at this stage");
+  assert.equal(status.authenticated, false);
+  assert.doesNotMatch(JSON.stringify(status), /fixture-password|fixture-user|secret-token/);
+  assert.equal(f.clicks(), 0);
+});
+
+test("navigation and session-inspection failures have distinct diagnostic stages", async () => {
+  const navigation = await fixture({ navigationFails: true }).run();
+  assert.equal(navigation.stage, "navigation");
+  assert.equal(navigation.reason, "authenticated page navigation failed");
+  const inspection = await fixture({ detectionFails: true }).run();
+  assert.equal(inspection.stage, "existing-session-check");
+  assert.equal(inspection.reason, "operation failed at this stage");
+  assert.doesNotMatch(JSON.stringify(inspection), /secret-token/);
+});
+
+test("challenge handoff reports manual-verification without automated submission", async () => {
+  const f = fixture({ initialChallenge: true, manualCancel: true });
+  const status = await f.run();
+  assert.equal(status.stage, "manual-verification");
+  assert.equal(status.manualVerificationRequired, true);
+  assert.match(status.reason, /verification challenge/);
+  assert.equal(f.clicks(), 0);
+});
+
+test("unconfirmed submission waits for explicit manual inspection completion", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const f = fixture({ failedLogin: true });
+  let release: ((answer: boolean) => void) | undefined;
+  let finished = false;
+  const pending = runLoginFlow(f.page, new AbortController().signal, credentials,
+    async (_verification, diagnostic) => {
+      assert.equal(diagnostic.stage, "post-submit-navigation");
+      assert.equal(diagnostic.reason, "authentication not confirmed after submission");
+      return new Promise<boolean>((resolve) => { release = resolve; });
+    }, f.inspect, f.dashboard).then((status) => { finished = true; return status; });
+  for (let i = 0; i < 30; i++) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    t.mock.timers.tick(500);
+  }
+  assert.equal(finished, false);
+  assert.equal(f.clicks(), 1);
+  assert.ok(release);
+  release(false);
+  assert.equal((await pending).authenticated, false);
+});
+
+
+test("unexpected login page reports detection failure without filling", async () => {
+  const f = fixture({ wrongLoginPage: true });
+  const status = await f.run();
+  assert.equal(status.stage, "login-page-detection");
+  assert.equal(status.reason, "expected login page not found");
+  assert.deepEqual(f.actions, []);
+  assert.equal(f.clicks(), 0);
+});
+
+test("failed authentication navigation pauses at its original stage", async () => {
+  const f = fixture({ verificationNavigationFails: true, manualCancel: true });
+  const status = await f.run();
+  assert.equal(status.stage, "authentication-check");
+  assert.match(status.reason, /authenticated page navigation failed after submission/);
+  assert.equal(f.manualDiagnostics.length, 1);
+  assert.equal(f.manualDiagnostics[0].stage, "authentication-check");
+  assert.equal(f.clicks(), 1);
 });

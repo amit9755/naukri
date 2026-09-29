@@ -85,10 +85,26 @@ can expose input values. No tracing, screenshots, or credential exports are enab
 
 If a challenge is detected, automated interaction stops and Chrome stays open for
 you to complete it manually. Type `done` only after the signed-in dashboard is
-visible. The final JSON contains `authenticated`, `profileAccessible`, and
-`manualVerificationRequired` (whether a challenge required manual handling during
-this run). Failed or uncertain authentication exits unsuccessfully. Verification
-uses read-only dashboard navigation; no profile edits are submitted.
+visible. If a submitted login cannot be confirmed (including an uncertain click
+outcome), the command prints a sanitized diagnostic and waits for manual inspection
+with no terminal timeout. It never clicks Login again. Enter anything other than
+`done`, close Chrome, or press Ctrl+C to stop.
+
+Before attempting login, the command prints only `credentialsConfigured` as a
+boolean. Result diagnostics include `authenticated`, `profileAccessible`,
+`manualVerificationRequired` (whether a challenge was detected),
+`credentialsConfigured`, `usernameFieldFound`, `passwordFieldFound`,
+`submitButtonFound`, `stage`, and `reason`. Field-found flags mean exactly one
+visible candidate was found; false can also mean detection has not been reached.
+Missing and ambiguous controls have distinct fixed reasons. No credential values,
+page text, URLs, raw browser errors, or session material are included.
+
+Stages identify launch/setup, navigation, existing-session checking, login-page
+and individual field/button detection, credential filling, submission,
+post-submit observation, authentication checking, and manual verification.
+Failed or uncertain authentication exits unsuccessfully. Verification uses
+read-only dashboard navigation; no profile edits are submitted. If browser cleanup
+fails, the final result reports failure even if authentication was detected earlier.
 
 Once login finishes and Chrome closes, reuse the same saved profile with:
 
