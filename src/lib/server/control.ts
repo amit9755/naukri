@@ -1,3 +1,4 @@
+import { authRequest, authorizeDashboardUser, DashboardAuthError, logAuthFailure } from "./dashboard-auth.ts";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { completion, exactKeys, record, uuid, online, safeResult, errorCodes } from "../../../lib/automation/contracts.ts";
 import type { Config } from "../../../lib/automation/contracts.ts";
@@ -55,9 +56,12 @@ export function cookie(request: Request, name: string) {
 export async function dashboardUser(request: Request): Promise<string> {
   const token = cookie(request, "naukri_access");
   if (!token) throw new ApiError(401, "UNAUTHORIZED");
-  const user = await supabase("/auth/v1/user", { headers: { Authorization: `Bearer ${token}` } });
-  if (user.id !== required("DASHBOARD_USER_ID")) throw new ApiError(403, "FORBIDDEN");
-  return user.id;
+  try { return authorizeDashboardUser(await authRequest("user", undefined, token)); }
+  catch (error) {
+    const failure = error instanceof DashboardAuthError ? error : new DashboardAuthError("SESSION_ERROR", 503);
+    logAuthFailure("user", failure);
+    throw new ApiError(failure.status, failure.status === 401 ? "UNAUTHORIZED" : failure.status === 403 ? "FORBIDDEN" : "SERVICE_UNAVAILABLE");
+  }
 }
 export async function agentUser(request: Request): Promise<string> {
   const id = request.headers.get("x-agent-id");

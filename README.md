@@ -44,6 +44,7 @@ Vercel, then deploy manually:
 | Variable | Value |
 | --- | --- |
 | `SUPABASE_URL` | Your Supabase project's HTTPS URL |
+| `SUPABASE_PUBLISHABLE_KEY` | Same project's publishable key for user Auth (legacy anon key also accepted) |
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase service-role key; Vercel only |
 | `DASHBOARD_USER_ID` | UUID of the single allowed Supabase Auth user |
 | `APP_ORIGIN` | Exact HTTPS deployment/custom origin, without a trailing slash |
@@ -62,6 +63,56 @@ Use a stable production origin; previews with a different origin fail this check
 If Vercel Deployment Protection is enabled, ensure your production agent can reach
 its authenticated API routes; a Vercel protection page cannot be used as an API.
 Do not enable request-body/header logging in external observability tools.
+
+## Dashboard sign-in diagnostics
+
+User Auth (password sign-in, session refresh, logout and verified user lookup) uses
+`SUPABASE_PUBLISHABLE_KEY` in the `apikey` header. Only an actual user access JWT
+is sent as an Authorization bearer for user lookup/logout. The service-role helper
+is reserved for privileged database access. Auth never falls back to that key.
+
+In Supabase, open **Project Settings → API Keys → Publishable and secret API keys**
+and copy the publishable key (`sb_publishable_...`) from the same project as
+`SUPABASE_URL`. Set `SUPABASE_PUBLISHABLE_KEY` in Vercel's **Production** environment
+and redeploy the updated code manually. A legacy **anon** key from the legacy API
+keys tab is also accepted; never use the legacy service-role or a secret key here.
+Keep `SUPABASE_SERVICE_ROLE_KEY` unchanged and server-only for database operations.
+The public-safe Auth key is consumed on the server, so no `NEXT_PUBLIC_` variable
+or direct browser Supabase client is needed. Cookies remain HttpOnly.
+
+For this deployment, set `APP_ORIGIN=https://naukri-gamma.vercel.app`, without a
+path. Keep `DASHBOARD_USER_ID` equal to the intended Supabase Auth user's UUID.
+All user checks enforce this allowlist on the server. There is no middleware:
+`/dashboard` verifies the access cookie server-side and redirects to `/login` if
+unverified; API routes independently verify access. The login page and dashboard
+can refresh the session through the protected same-origin session endpoint.
+
+The browser intentionally retains a generic sign-in error. In Vercel runtime logs,
+filter for `dashboard-auth-failure`. Only a fixed `stage` and `code` are recorded:
+
+| Code | Interpretation |
+| --- | --- |
+| `INVALID_CREDENTIALS` | Supabase explicitly returned `invalid_credentials`; not inferred from every rejection |
+| `AUTH_CONFIGURATION_ERROR` | Missing/malformed URL, Auth key or owner UUID, or provider key rejection |
+| `UNAUTHORIZED_DASHBOARD_USER` | Auth succeeded but user UUID does not match the server allowlist |
+| `SESSION_ERROR` | Invalid/expired session or malformed token response |
+| `ORIGIN_MISMATCH` | Request Origin does not match `APP_ORIGIN` |
+| `AUTH_UNAVAILABLE` | Provider/network failure |
+| `AUTH_RATE_LIMITED` | Provider returned HTTP 429 |
+| `AUTH_REQUEST_REJECTED` | Other provider sign-in rejection; inspect project Auth settings privately |
+| `INVALID_REQUEST` | Invalid request body/action |
+
+Stages distinguish `origin`, `request`, `password`, `refresh`, `user`, `logout` and
+`cookies`. No password, email, token, cookie, API key, raw provider error or exception
+stack is logged. A visitor with no refresh cookie is a normal unauthenticated state.
+
+The previous UI produced the same message for every failed POST or fetch failure.
+Its API discarded provider errors, and Auth used the database service-role helper.
+That code alone cannot identify which production branch failed: valid legacy
+service-role credentials do not inherently prove a password sign-in failure.
+After deploying this correction, attempt your dashboard login once and inspect the
+fixed category if it still fails. Do not share environment values or request bodies.
+Reference: [Supabase API key guidance](https://supabase.com/docs/guides/getting-started/api-keys).
 
 ## Setup: Windows (CMD)
 

@@ -64,7 +64,7 @@ test("dashboard status strips secrets and computes online/next-run", async () =>
   assert.equal(JSON.parse(text).agents[0].online, true); assert.ok(JSON.parse(text).agents[0].nextRun);
 });
 test("real authentication helpers validate Supabase user, agent secret and CSRF origin", async (t) => {
-  process.env.SUPABASE_URL = "https://supabase.example"; process.env.SUPABASE_SERVICE_ROLE_KEY = "fixture-role-key";
+  process.env.SUPABASE_URL = "https://supabase.example"; process.env.SUPABASE_SERVICE_ROLE_KEY = "fixture-role-key"; process.env.SUPABASE_PUBLISHABLE_KEY = "sb_publishable_fixture";
   process.env.DASHBOARD_USER_ID = owner; process.env.APP_ORIGIN = "https://dashboard.example";
   t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
     return String(input).includes("/auth/v1/user") ? Response.json({ id: owner }) : Response.json([{ id: agent, secret_hash: secretHash("s".repeat(43)) }]);
