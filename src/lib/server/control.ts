@@ -116,6 +116,12 @@ export async function handleControl(request: Request, path: string, deps = defau
     }
     const owner = await deps.dashboardUser(request);
     if (request.method !== "GET") deps.originCheck(request);
+    // TEMPORARY: remove after enrollment mismatch diagnosis. Dashboard owner only;
+    // hash the exact registration value, without trimming or logging it.
+    if (path === "dashboard/enrollment-diagnostic" && request.method === "GET") {
+      const secret = process.env.AGENT_ENROLLMENT_SECRET ?? "";
+      return json({ configured: secret.length > 0, length: secret.length, fingerprint: secretHash(secret).slice(0, 12) });
+    }
     if (path === "dashboard/status" && request.method === "GET") {
       const agents = await deps.db(`/rest/v1/agents?owner_id=eq.${owner}&select=id,name,status,session_status,last_seen_at,app_version&order=created_at.asc`);
       const results = [];
