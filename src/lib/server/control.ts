@@ -1,3 +1,4 @@
+import { NextRequest } from "next/server.js";
 import { authRequest, authorizeDashboardUser, DashboardAuthError, logAuthFailure } from "./dashboard-auth.ts";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { completion, exactKeys, record, uuid, online, safeResult, errorCodes } from "../../../lib/automation/contracts.ts";
@@ -50,8 +51,10 @@ export async function supabase(path: string, init: RequestInit = {}) {
   return text ? JSON.parse(text) : null;
 }
 export function cookie(request: Request, name: string) {
-  const found = request.headers.get("cookie")?.split(";").map((entry) => entry.trim()).find((entry) => entry.startsWith(`${name}=`));
-  return found?.slice(name.length + 1) ?? "";
+  // Match the cookie parser used by Server Components (cookies()). In particular,
+  // duplicate names must resolve identically for page and API authorization.
+  // Copy headers only: do not consume or clone the caller's request body.
+  return new NextRequest(request.url, { headers: request.headers }).cookies.get(name)?.value ?? "";
 }
 export async function dashboardUser(request: Request): Promise<string> {
   const token = cookie(request, "naukri_access");
