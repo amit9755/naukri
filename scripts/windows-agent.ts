@@ -9,6 +9,10 @@ import { executeRefresh } from "./agent/executor.ts";
 import { assertOutsideRepository } from "./lib/local-chrome.ts";
 import type { Config } from "../lib/automation/contracts.ts";
 
+import { startupDiagnostic } from "./agent/startup-diagnostics.ts";
+import type { StartupStage } from "./agent/startup-diagnostics.ts";
+
+let startupStage: StartupStage = "local";
 async function main() {
   if (process.platform !== "win32" || process.env.VERCEL || process.env.DEBUG || process.env.PWDEBUG) throw new Error("LOCAL_WINDOWS_REQUIRED");
   delete process.env.NAUKRI_USERNAME; delete process.env.NAUKRI_PASSWORD;
@@ -22,15 +26,22 @@ async function main() {
   const sleep = (ms: number) => delay(ms, undefined, { signal: stop.signal }).catch(() => {});
   try {
     await unlink(join(directory, "agent.stop")).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; });
-    const identity = await loadIdentity(directory, serverOrigin(process.env.AGENT_SERVER_URL ?? ""));
+    startupStage = "origin";
+    const server = serverOrigin(process.env.AGENT_SERVER_URL ?? "");
+    startupStage = "identity";
+    const identity = await loadIdentity(directory, server);
     const client = new AgentClient(identity);
     if (!identity.registered) {
+      startupStage = "enrollment";
       const enrollment = process.env.AGENT_ENROLLMENT_SECRET;
       if (!enrollment || enrollment.length < 32) throw new Error("ENROLLMENT_REQUIRED");
+      startupStage = "registration";
       await client.request("register", { id: identity.id, machine_id: identity.machine_id, name: process.env.AGENT_NAME ?? "Windows laptop", secret: identity.secret, app_version: "1.0.0" }, enrollment);
+      startupStage = "identity";
       identity.registered = true; await atomicJson(join(directory, "agent.json"), identity);
       await localLog(directory, "registered");
     }
+    startupStage = "running";
     delete process.env.AGENT_ENROLLMENT_SECRET;
     if (process.argv.includes("--rotate-secret") || identity.pendingSecret) {
       identity.pendingSecret ??= randomBytes(32).toString("base64url");
@@ -74,9 +85,9 @@ async function main() {
     await release();
   }
 }
-main().catch(async () => {
+main().catch(async (error: unknown) => {
   // No raw errors or environment values, including failures before authentication.
   try { await localLog(agentDirectory(), "startup-failed"); } catch { /* fixed console result below */ }
-  console.error(JSON.stringify({ success: false, error: "AGENT_STOPPED_CHECK_LOCAL_SETUP" }));
+  console.error(JSON.stringify(startupDiagnostic(error, startupStage)));
   process.exitCode = 1;
 });
